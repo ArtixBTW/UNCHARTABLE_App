@@ -1,6 +1,6 @@
 # UNCHARTABLE
 
-The official UNCHARTABLE chart manager for **UNBEATABLE**.
+A chart manager for **UNBEATABLE**.
 
 UNCHARTABLE is a lightweight Windows app for discovering, previewing, installing,
 updating, and managing community charts from
@@ -44,15 +44,6 @@ src/                  desktop interface
 src-tauri/src/        catalog, validation, installation, and library management
 src-tauri/icons/      application icons
 .github/workflows/    verification and release builds
-```
-
-Useful development commands:
-
-```powershell
-npm install
-npm run check
-npm run tauri dev
-npm run build:portable
 ```
 
 ## License
