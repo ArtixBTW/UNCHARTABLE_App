@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Frontend tests
+        run: npm run test
+      - name: Frontend build
+        run: npm run build
+      - name: Rust format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

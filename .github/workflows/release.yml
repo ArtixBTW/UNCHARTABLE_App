@@ -1,0 +1,43 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Test frontend
+        run: npm run test
+      - name: Test native installer
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build portable executable
+        run: npm run build:portable
+      - name: Package portable release
+        shell: pwsh
+        run: ./scripts/package-portable.ps1 -Version "${{ github.ref_name }}".TrimStart("v")
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            --title "UNCHARTABLE ${{ github.ref_name }}" `
+            --notes "The first portable Windows release of UNCHARTABLE. Download the executable, open it, and start browsing community charts. No installer or administrator access is required. A SHA-256 checksum is attached for verification." `
+            output/release/*.exe `
+            output/release/*.sha256
