@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChartCoverUrl, buildChartPreviewUrl, buildChartPublicUrl, chartContentVersion, difficultyClass, formatBytes, formatDuration } from "./lib";
+import { buildChartCoverUrl, buildChartPreviewUrl, buildChartPublicUrl, chartContentVersion, difficultyClass, formatBytes, formatDuration, parseInstallDeepLink } from "./lib";
 
 describe("chart presentation helpers", () => {
   it("builds a versioned cover URL", () => {
@@ -32,5 +32,13 @@ describe("chart presentation helpers", () => {
       contentUpdatedAt: "2026-07-23T13:00:00Z",
       updatedAt: "2026-07-23T14:00:00Z"
     })).toBe("2026-07-23T13:00:00Z");
+  });
+
+  it("accepts only install deep links with a UUID chart id", () => {
+    expect(parseInstallDeepLink("unchartable://install/0aaf5a3a-f9c6-4fbe-9306-b5010a85d6dd"))
+      .toBe("0aaf5a3a-f9c6-4fbe-9306-b5010a85d6dd");
+    expect(parseInstallDeepLink("unchartable://open/0aaf5a3a-f9c6-4fbe-9306-b5010a85d6dd")).toBeNull();
+    expect(parseInstallDeepLink("https://unchartable.site/charts/0aaf5a3a-f9c6-4fbe-9306-b5010a85d6dd")).toBeNull();
+    expect(parseInstallDeepLink("unchartable://install/not-a-chart")).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 [package]
 name = "unchartable-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "Install community charts from UNCHARTABLE into UNBEATABLE."
 authors = ["UNCHARTABLE contributors"]
 edition = "2024"
@@ -20,7 +20,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

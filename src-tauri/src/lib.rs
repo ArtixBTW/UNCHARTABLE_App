@@ -1151,6 +1151,30 @@ async fn fetch_charts(
 }
 
 #[tauri::command]
+async fn fetch_chart(chart_id: String) -> Result<serde_json::Value, String> {
+    validate_chart_id(&chart_id)?;
+    let payload = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("could not prepare the chart request: {error}"))?
+        .get(format!("{API_ORIGIN}/api/charts/{chart_id}"))
+        .send()
+        .await
+        .map_err(|error| format!("could not reach unchartable.site: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("UNCHARTABLE returned an error: {error}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("could not read the chart: {error}"))?;
+
+    payload
+        .get("chart")
+        .cloned()
+        .ok_or_else(|| "UNCHARTABLE did not return a chart.".to_string())
+}
+
+#[tauri::command]
 fn cancel_install(runtime: State<'_, InstallRuntime>, chart_id: String) -> Result<(), String> {
     validate_chart_id(&chart_id)?;
     runtime
@@ -1784,7 +1808,16 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             adopt_manual_chart,
             cancel_install,
@@ -1793,6 +1826,7 @@ pub fn run() {
             find_manual_chart_matches,
             get_app_state,
             empty_chart_trash,
+            fetch_chart,
             install_chart,
             launch_unbeatable,
             list_installed_charts,

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Check,
@@ -40,6 +41,7 @@ import {
   difficultyClass,
   formatBytes,
   formatDuration,
+  parseInstallDeepLink,
   type AppState,
   type Chart,
   type ChartCatalog,
@@ -84,6 +86,14 @@ async function fetchCatalog(query: string, page: number, difficulty: string, ran
   return response.json() as Promise<ChartCatalog>;
 }
 
+async function fetchChart(chartId: string) {
+  if (isTauri()) return invoke<Chart>("fetch_chart", { chartId });
+  const response = await fetch(`${API_ORIGIN}/api/charts/${encodeURIComponent(chartId)}`);
+  const payload = await response.json() as { chart?: Chart };
+  if (!response.ok || !payload.chart) throw new Error("Could not load this chart.");
+  return payload.chart;
+}
+
 function App() {
   const [view, setView] = useState<View>("charts");
   const [theme, setTheme] = useState<Theme>(() => {
@@ -102,6 +112,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
   const [installing, setInstalling] = useState<Record<string, InstallEntry>>({});
+  const [pendingInstallId, setPendingInstallId] = useState<string | null>(null);
   const [installedCharts, setInstalledCharts] = useState<InstalledChart[]>([]);
   const [installedQuery, setInstalledQuery] = useState("");
   const [manualMatches, setManualMatches] = useState<ManualChartMatch[]>([]);
@@ -144,6 +155,24 @@ function App() {
       document.removeEventListener("contextmenu", preventContextMenu);
       document.removeEventListener("keydown", preventBrowserShortcuts);
     };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    const acceptDeepLinks = (urls: string[]) => {
+      const chartId = urls.map(parseInstallDeepLink).find((value): value is string => Boolean(value));
+      if (chartId) setPendingInstallId(chartId);
+    };
+
+    void onOpenUrl(acceptDeepLinks).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    void getCurrent().then((urls) => {
+      if (urls) acceptDeepLinks(urls);
+    });
+
+    return () => unlisten?.();
   }, []);
 
   useEffect(() => {
@@ -357,6 +386,35 @@ function App() {
       return false;
     }
   }
+
+  useEffect(() => {
+    if (!pendingInstallId || !appState) return;
+    const chartId = pendingInstallId;
+    setPendingInstallId(null);
+
+    if (!targetDirectory) {
+      setView("settings");
+      setUpdateMessage("Choose your UNBEATABLE CustomSongs folder to install this chart.");
+      return;
+    }
+    if (installedIds.has(chartId)) {
+      setView("downloads");
+      setUpdateMessage("This chart is already installed.");
+      return;
+    }
+    if (installing[chartId]) {
+      setView("downloads");
+      return;
+    }
+
+    setView("downloads");
+    void fetchChart(chartId)
+      .then((chart) => install(chart))
+      .catch((error) => {
+        setView("charts");
+        setUpdateMessage(error instanceof Error ? error.message : "Could not open this chart.");
+      });
+  }, [appState, installedIds, installing, pendingInstallId, targetDirectory]);
 
   useEffect(() => {
     if (!isTauri() || !automaticUpdates || !appState?.directoryExists || !targetDirectory) return;
@@ -837,7 +895,7 @@ function App() {
               </div>
               <div className="security-note">
                 <ShieldCheck />
-                <p>Archives are downloaded over HTTPS, limited to 250 MB, checked for unsafe paths and executables, then installed atomically.</p>
+                <p>Chart ZIPs are downloaded securely, checked for unsafe files, and installed only after verification.</p>
               </div>
             </section>
           </>

@@ -102,6 +102,19 @@ export function buildChartPreviewUrl(chart: Pick<Chart, "id">) {
   return `${API_ORIGIN}/api/charts/${encodeURIComponent(chart.id)}/preview`;
 }
 
+export function parseInstallDeepLink(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "unchartable:" || url.hostname !== "install") return null;
+    const chartId = url.pathname.split("/").filter(Boolean)[0] ?? "";
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(chartId)
+      ? chartId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function difficultyClass(difficulty: string) {
   const normalized = difficulty.toLowerCase();
   return `difficulty-${["beginner", "normal", "hard", "expert", "unbeatable", "star"].includes(normalized) ? normalized : "normal"}`;
