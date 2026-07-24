@@ -38,6 +38,6 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" `
             --title "UNCHARTABLE ${{ github.ref_name }}" `
-            --notes "Portable Windows release of UNCHARTABLE. This version adds one-click chart installation from unchartable.site through secure unchartable:// links. No installer or administrator access is required. A SHA-256 checksum is attached for verification." `
+            --notes "Portable Windows release of UNCHARTABLE with one-click chart installation from unchartable.site. A SHA-256 checksum is attached for verification." `
             output/release/*.exe `
             output/release/*.sha256

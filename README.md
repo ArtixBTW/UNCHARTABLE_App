@@ -45,21 +45,6 @@ The selected game directory, theme, update preference, and chart-management
 metadata are stored locally on the player's computer. UNCHARTABLE does not upload
 the contents of the player's `CustomSongs` directory.
 
-## Code signing policy
-
-Free code signing is provided by
-[SignPath.io](https://signpath.io/), with a certificate provided by the
-[SignPath Foundation](https://signpath.org/).
-
-Official releases must be built from this repository by the GitHub Actions
-release workflow. Signing is limited to release artifacts produced from tagged
-commits in this repository.
-
-Project roles:
-
-- Committer and reviewer: [ddecry](https://github.com/ddecry)
-- Approver: [ddecry](https://github.com/ddecry)
-
 ## Project
 
 UNCHARTABLE uses React and TypeScript for the interface and Rust with Tauri for
