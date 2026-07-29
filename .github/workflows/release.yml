@@ -36,8 +36,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          @"
+          ## What's new
+
+          - Drag and drop a chart ZIP anywhere in the app to validate and import it.
+          - Browse chart packs and install their charts through a guided selection.
+          - Search the installed library by title, artist, charter, or folder.
+          - Recognize compatible charts that were installed manually and link them to UNCHARTABLE.
+          - Enable automatic updates for every recognized chart with one action.
+          - Keep downloads in a persistent queue with progress, retry, and cancellation controls.
+          - Restore deleted charts from trash and empty the trash when it is no longer needed.
+          - Roll back chart updates using automatically retained backups.
+          - Repair incomplete temporary installs and review compact library diagnostics.
+          - Create and export local chart packs.
+          - Keep UNCHARTABLE available from the system tray with low background activity.
+
+          ## Import safety
+
+          Imported archives are validated before extraction. UNCHARTABLE rejects unsupported formats, unsafe paths, executable payloads, incomplete charts, and archives larger than 250 MB.
+
+          ## Verification
+
+          This release includes a SHA-256 checksum for the portable executable.
+          "@ | Set-Content -Encoding utf8 release-notes.md
+
           gh release create "${{ github.ref_name }}" `
             --title "UNCHARTABLE ${{ github.ref_name }}" `
-            --notes "Portable Windows release of UNCHARTABLE with one-click chart installation from unchartable.site. A SHA-256 checksum is attached for verification." `
+            --notes-file release-notes.md `
             output/release/*.exe `
             output/release/*.sha256

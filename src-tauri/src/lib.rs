@@ -3,12 +3,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    fs,
+    fs::{self, File},
     io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    AppHandle, Emitter, Manager, State, WindowEvent,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
@@ -73,6 +77,7 @@ struct InstallMetadata {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InstalledChart {
+    audio_duration_seconds: Option<f64>,
     chart_id: Option<String>,
     title: String,
     artist: Option<String>,
@@ -106,6 +111,71 @@ struct TrashItem {
     original_folder_name: String,
     deleted_at: String,
     size_bytes: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupMetadata {
+    backup_id: String,
+    chart_id: String,
+    created_at: String,
+    folder_name: String,
+    title: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupItem {
+    backup_id: String,
+    chart_id: String,
+    created_at: String,
+    folder_name: String,
+    size_bytes: u64,
+    title: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticReport {
+    backup_count: usize,
+    backup_size_bytes: u64,
+    free_space_bytes: u64,
+    invalid_charts: usize,
+    managed_charts: usize,
+    manual_charts: usize,
+    path: String,
+    path_writable: bool,
+    total_charts: usize,
+    total_size_bytes: u64,
+    trash_count: usize,
+    trash_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportArchiveInspection {
+    archive_path: String,
+    archive_size_bytes: u64,
+    artist: String,
+    charter: String,
+    conflict_path: Option<String>,
+    title: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepairReport {
+    invalid_chart_paths: Vec<String>,
+    removed_temporary_items: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OperationRecord {
+    action: String,
+    created_at: String,
+    detail: String,
+    title: String,
 }
 
 #[derive(Serialize)]
@@ -344,6 +414,9 @@ fn scan_installed(target: &Path) -> Result<Vec<InstalledChart>, String> {
             && !inspection.identity.artist.is_empty())
         .then_some(inspection.identity);
         charts.push(InstalledChart {
+            audio_duration_seconds: manual_identity
+                .as_ref()
+                .and_then(|value| value.duration_seconds),
             chart_id: metadata.as_ref().map(|value| value.chart_id.clone()),
             title: metadata
                 .as_ref()
@@ -392,6 +465,96 @@ fn trash_directory(_target: &Path) -> PathBuf {
             .unwrap_or_else(std::env::temp_dir)
             .join("UNCHARTABLE")
             .join("Trash")
+    }
+}
+
+fn backup_directory(_target: &Path) -> PathBuf {
+    #[cfg(test)]
+    {
+        _target.join(".unchartable-backups")
+    }
+
+    #[cfg(not(test))]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("UNCHARTABLE")
+            .join("Backups")
+    }
+}
+
+fn history_path(_target: &Path) -> PathBuf {
+    #[cfg(test)]
+    {
+        _target.join(".unchartable-history.json")
+    }
+
+    #[cfg(not(test))]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("UNCHARTABLE")
+            .join("history.json")
+    }
+}
+
+fn read_operation_history(target: &Path) -> Vec<OperationRecord> {
+    fs::read(history_path(target))
+        .ok()
+        .and_then(|body| serde_json::from_slice(&body).ok())
+        .unwrap_or_default()
+}
+
+fn append_operation(target: &Path, action: &str, title: &str, detail: &str) {
+    let path = history_path(target);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut records = read_operation_history(target);
+    records.insert(
+        0,
+        OperationRecord {
+            action: action.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            detail: detail.to_string(),
+            title: title.to_string(),
+        },
+    );
+    records.truncate(500);
+    if let Ok(body) = serde_json::to_vec_pretty(&records) {
+        let _ = fs::write(path, body);
+    }
+}
+
+fn prepare_backup_directory(target: &Path) -> Result<PathBuf, String> {
+    let backups = backup_directory(target);
+    fs::create_dir_all(&backups)
+        .map_err(|error| format!("could not create the UNCHARTABLE backup folder: {error}"))?;
+    Ok(backups)
+}
+
+fn backup_metadata(path: &Path) -> Option<BackupMetadata> {
+    let body = fs::read(path.join(".unchartable-backup.json")).ok()?;
+    serde_json::from_slice(&body).ok()
+}
+
+fn prune_chart_backups(backups: &Path, chart_id: &str, keep: usize) {
+    let Ok(entries) = fs::read_dir(backups) else {
+        return;
+    };
+    let mut matching = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = backup_metadata(&path)?;
+            (metadata.chart_id == chart_id).then_some((metadata.created_at, path))
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in matching.into_iter().skip(keep) {
+        let _ = fs::remove_dir_all(path);
     }
 }
 
@@ -639,11 +802,327 @@ fn finalize_install(
         let _ = fs::remove_dir_all(staging_path);
     }
     if backup.exists() {
-        fs::remove_dir_all(backup).map_err(|error| {
-            format!("chart installed, but its previous backup could not be removed: {error}")
+        let target = destination
+            .parent()
+            .ok_or_else(|| "the chart destination has no parent folder.".to_string())?;
+        let backups = prepare_backup_directory(target)?;
+        let backup_id = Uuid::new_v4().to_string();
+        let backup_destination = backups.join(&backup_id);
+        fs::rename(&backup, &backup_destination).map_err(|error| {
+            format!("chart installed, but its backup could not be saved: {error}")
         })?;
+        let previous = read_install_metadata(&backup_destination);
+        let backup_metadata = BackupMetadata {
+            backup_id,
+            chart_id: metadata.chart_id.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            folder_name: destination
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Restored Chart")
+                .to_string(),
+            title: previous
+                .map(|value| value.title)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| metadata.title.clone()),
+        };
+        let body = serde_json::to_vec_pretty(&backup_metadata)
+            .map_err(|error| format!("could not create backup metadata: {error}"))?;
+        fs::write(backup_destination.join(".unchartable-backup.json"), body)
+            .map_err(|error| format!("could not finish the chart backup: {error}"))?;
+        prune_chart_backups(&backups, &metadata.chart_id, 3);
     }
     Ok(())
+}
+
+fn validate_local_archive(archive_path: &Path) -> Result<u64, String> {
+    if !archive_path.is_file() {
+        return Err("choose an existing chart ZIP.".to_string());
+    }
+    if !archive_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("zip"))
+    {
+        return Err("UNCHARTABLE imports ZIP archives only.".to_string());
+    }
+    let size = fs::metadata(archive_path)
+        .map_err(|error| format!("could not inspect the archive: {error}"))?
+        .len();
+    if size > MAX_ARCHIVE_BYTES {
+        return Err("the chart archive exceeds the 250 MB limit.".to_string());
+    }
+    Ok(size)
+}
+
+fn matching_local_chart(target: &Path, identity: &ManualChartIdentity) -> Option<PathBuf> {
+    let title = normalized_match_value(&identity.title);
+    let artist = normalized_match_value(&identity.artist);
+    scan_installed(target).ok()?.into_iter().find_map(|chart| {
+        if normalized_match_value(&chart.title) != title
+            || normalized_match_value(chart.artist.as_deref().unwrap_or_default()) != artist
+        {
+            return None;
+        }
+        let local_creators = chart
+            .manual_identity
+            .as_ref()
+            .map(|value| value.creators.clone())
+            .unwrap_or_else(|| {
+                chart
+                    .charter
+                    .as_deref()
+                    .map(normalized_match_value)
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect()
+            });
+        let creators_overlap = identity.creators.is_empty()
+            || local_creators.is_empty()
+            || identity
+                .creators
+                .iter()
+                .any(|creator| local_creators.contains(creator));
+        creators_overlap.then(|| PathBuf::from(chart.path))
+    })
+}
+
+fn inspect_archive_for_import(
+    archive_path: &Path,
+    target: &Path,
+) -> Result<(ImportArchiveInspection, PathBuf, PathBuf), String> {
+    validate_target_directory(target)?;
+    let archive_size_bytes = validate_local_archive(archive_path)?;
+    let staging = target.join(format!(".unchartable-import-{}", Uuid::new_v4().simple()));
+    fs::create_dir_all(&staging)
+        .map_err(|error| format!("could not create the import workspace: {error}"))?;
+    let source = match extract_zip_safely(archive_path, &staging) {
+        Ok(source) => source,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let inspection = inspect_local_chart(&source, true);
+    if !inspection.has_chart || !inspection.has_audio {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(match (inspection.has_chart, inspection.has_audio) {
+            (false, false) => "the ZIP contains neither chart .txt files nor supported audio.",
+            (false, true) => "the ZIP contains audio but no chart .txt file.",
+            (true, false) => "the ZIP contains chart data but no supported audio file.",
+            (true, true) => unreachable!(),
+        }
+        .to_string());
+    }
+    if inspection.identity.title.is_empty() || inspection.identity.artist.is_empty() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err("the chart TXT is missing a title or artist.".to_string());
+    }
+    let conflict = matching_local_chart(target, &inspection.identity);
+    let result = ImportArchiveInspection {
+        archive_path: archive_path.to_string_lossy().to_string(),
+        archive_size_bytes,
+        artist: inspection.identity.artist.clone(),
+        charter: inspection
+            .identity
+            .creator_label
+            .clone()
+            .unwrap_or_else(|| "unknown charter".to_string()),
+        conflict_path: conflict.map(|path| path.to_string_lossy().to_string()),
+        title: inspection.identity.title.clone(),
+    };
+    Ok((result, staging, source))
+}
+
+#[tauri::command]
+fn inspect_chart_archive(
+    archive_path: String,
+    target_directory: String,
+) -> Result<ImportArchiveInspection, String> {
+    let target = PathBuf::from(target_directory);
+    let (inspection, staging, _) = inspect_archive_for_import(Path::new(&archive_path), &target)?;
+    let _ = fs::remove_dir_all(staging);
+    Ok(inspection)
+}
+
+#[tauri::command]
+fn import_chart_archive(
+    archive_path: String,
+    target_directory: String,
+    allow_duplicate: bool,
+) -> Result<String, String> {
+    let target = PathBuf::from(target_directory);
+    let (inspection, staging, source) =
+        inspect_archive_for_import(Path::new(&archive_path), &target)?;
+    if inspection.conflict_path.is_some() && !allow_duplicate {
+        let _ = fs::remove_dir_all(staging);
+        return Err("a matching chart is already installed.".to_string());
+    }
+    let folder_name =
+        install_folder_name(&source, &staging, &inspection.title, &inspection.charter);
+    let destination = new_install_path(
+        &target,
+        &folder_name,
+        &inspection.title,
+        &inspection.charter,
+    );
+    if let Err(error) = fs::rename(&source, &destination) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("could not install the imported chart: {error}"));
+    }
+    let _ = fs::remove_dir_all(staging);
+    append_operation(
+        &target,
+        "import",
+        &inspection.title,
+        &format!("Imported from {}", inspection.archive_path),
+    );
+    Ok(destination.to_string_lossy().to_string())
+}
+
+fn is_repairable_temporary_item(name: &str) -> bool {
+    if name.starts_with(".unchartable-import-") || name.starts_with(".unchartable-write-test-") {
+        return true;
+    }
+    let Some(operation_id) = name
+        .strip_prefix(".unchartable-")
+        .and_then(|value| value.strip_suffix(".zip").or(Some(value)))
+    else {
+        return false;
+    };
+    Uuid::parse_str(operation_id).is_ok()
+}
+
+#[tauri::command]
+fn repair_library(path: String) -> Result<RepairReport, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let mut removed_temporary_items = 0;
+    for entry in fs::read_dir(&target)
+        .map_err(|error| format!("could not inspect CustomSongs: {error}"))?
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_repairable_temporary_item(&name) {
+            continue;
+        }
+        let result = if entry.path().is_dir() {
+            fs::remove_dir_all(entry.path())
+        } else {
+            fs::remove_file(entry.path())
+        };
+        if result.is_ok() {
+            removed_temporary_items += 1;
+        }
+    }
+    let invalid_chart_paths = scan_installed(&target)?
+        .into_iter()
+        .filter(|chart| !chart.playable)
+        .map(|chart| chart.path)
+        .collect::<Vec<_>>();
+    append_operation(
+        &target,
+        "repair",
+        "Library repair",
+        &format!(
+            "Removed {removed_temporary_items} temporary items; found {} invalid chart folders",
+            invalid_chart_paths.len()
+        ),
+    );
+    Ok(RepairReport {
+        invalid_chart_paths,
+        removed_temporary_items,
+    })
+}
+
+#[tauri::command]
+fn list_operation_history(path: String) -> Result<Vec<OperationRecord>, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    Ok(read_operation_history(&target))
+}
+
+fn add_directory_to_zip(
+    writer: &mut zip::ZipWriter<File>,
+    root: &Path,
+    current: &Path,
+    prefix: &str,
+) -> Result<(), String> {
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for entry in fs::read_dir(current)
+        .map_err(|error| format!("could not read a chart folder: {error}"))?
+        .flatten()
+    {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "could not build the pack archive path.".to_string())?;
+        let name = format!("{prefix}/{}", relative.to_string_lossy().replace('\\', "/"));
+        if path.is_dir() {
+            writer
+                .add_directory(format!("{name}/"), options)
+                .map_err(|error| format!("could not add a pack folder: {error}"))?;
+            add_directory_to_zip(writer, root, &path, prefix)?;
+        } else {
+            writer
+                .start_file(name, options)
+                .map_err(|error| format!("could not add a pack file: {error}"))?;
+            let mut source = File::open(&path)
+                .map_err(|error| format!("could not read a chart file: {error}"))?;
+            io::copy(&mut source, writer)
+                .map_err(|error| format!("could not write a pack file: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn export_local_pack(
+    path: String,
+    output_path: String,
+    chart_paths: Vec<String>,
+    name: String,
+) -> Result<String, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    if chart_paths.is_empty() {
+        return Err("select at least one installed chart.".to_string());
+    }
+    let output = PathBuf::from(output_path);
+    if !output
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("zip"))
+    {
+        return Err("local packs must be exported as ZIP files.".to_string());
+    }
+    let file = File::create(&output)
+        .map_err(|error| format!("could not create the pack archive: {error}"))?;
+    let mut writer = zip::ZipWriter::new(file);
+    let chart_count = chart_paths.len();
+    for chart_path in chart_paths {
+        let chart = PathBuf::from(chart_path);
+        if !is_direct_child(&target, &chart) || !chart.is_dir() {
+            return Err("refusing to export a folder outside CustomSongs.".to_string());
+        }
+        let folder_name = chart
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(sanitize_folder_name)
+            .unwrap_or_else(|| "Chart".to_string());
+        add_directory_to_zip(&mut writer, &chart, &chart, &folder_name)?;
+    }
+    writer
+        .finish()
+        .map_err(|error| format!("could not finish the pack archive: {error}"))?;
+    append_operation(
+        &target,
+        "export",
+        &name,
+        &format!("Exported {chart_count} installed charts"),
+    );
+    Ok(output.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -708,6 +1187,9 @@ fn trash_installed_chart(path: String, chart_id: String) -> Result<(), String> {
     validate_target_directory(&target)?;
     let source = find_existing_install(&target, &chart_id)
         .ok_or_else(|| "this managed chart is no longer installed.".to_string())?;
+    let title = read_install_metadata(&source)
+        .map(|metadata| metadata.title)
+        .unwrap_or_else(|| "Chart".to_string());
     if !is_direct_child(&target, &source) {
         return Err("refusing to remove a chart outside CustomSongs.".to_string());
     }
@@ -730,7 +1212,9 @@ fn trash_installed_chart(path: String, chart_id: String) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(&trash_metadata)
         .map_err(|error| format!("could not create trash metadata: {error}"))?;
     fs::write(destination.join(".unchartable-trash.json"), body)
-        .map_err(|error| format!("could not finish moving the chart to trash: {error}"))
+        .map_err(|error| format!("could not finish moving the chart to trash: {error}"))?;
+    append_operation(&target, "remove", &title, "Moved to the UNCHARTABLE trash");
+    Ok(())
 }
 
 #[tauri::command]
@@ -796,6 +1280,12 @@ fn restore_trashed_chart(path: String, trash_id: String) -> Result<String, Strin
         let _ = fs::remove_file(source.join(".unchartable-trash.json"));
         fs::rename(&source, &destination)
             .map_err(|error| format!("could not restore the chart: {error}"))?;
+        append_operation(
+            &target,
+            "restore",
+            &metadata.original_folder_name,
+            "Restored from trash",
+        );
         return Ok(destination.to_string_lossy().to_string());
     }
     Err("the trashed chart could not be found.".to_string())
@@ -825,6 +1315,131 @@ fn empty_chart_trash(path: String) -> Result<usize, String> {
         removed += 1;
     }
     Ok(removed)
+}
+
+#[tauri::command]
+fn list_chart_backups(path: String) -> Result<Vec<BackupItem>, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let backups = prepare_backup_directory(&target)?;
+    let mut items = fs::read_dir(&backups)
+        .map_err(|error| format!("could not scan chart backups: {error}"))?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = backup_metadata(&path)?;
+            Some(BackupItem {
+                backup_id: metadata.backup_id,
+                chart_id: metadata.chart_id,
+                created_at: metadata.created_at,
+                folder_name: metadata.folder_name,
+                size_bytes: directory_size(&path),
+                title: metadata.title,
+            })
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(items)
+}
+
+#[tauri::command]
+fn restore_chart_backup(path: String, backup_id: String) -> Result<String, String> {
+    validate_chart_id(&backup_id)?;
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let backups = prepare_backup_directory(&target)?;
+    let source = fs::read_dir(&backups)
+        .map_err(|error| format!("could not scan chart backups: {error}"))?
+        .flatten()
+        .find_map(|entry| {
+            let path = entry.path();
+            backup_metadata(&path)
+                .filter(|metadata| metadata.backup_id == backup_id)
+                .map(|metadata| (path, metadata))
+        })
+        .ok_or_else(|| "this backup could not be found.".to_string())?;
+    let (source_path, metadata) = source;
+    let current = find_existing_install(&target, &metadata.chart_id);
+    let destination = current
+        .clone()
+        .unwrap_or_else(|| unique_install_path(&target, &metadata.folder_name));
+
+    if let Some(current_path) = current {
+        let replacement_id = Uuid::new_v4().to_string();
+        let replacement = backups.join(&replacement_id);
+        fs::rename(&current_path, &replacement)
+            .map_err(|error| format!("could not preserve the current chart version: {error}"))?;
+        let current_metadata = read_install_metadata(&replacement);
+        let body = serde_json::to_vec_pretty(&BackupMetadata {
+            backup_id: replacement_id,
+            chart_id: metadata.chart_id.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            folder_name: metadata.folder_name.clone(),
+            title: current_metadata
+                .map(|value| value.title)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| metadata.title.clone()),
+        })
+        .map_err(|error| format!("could not create replacement backup metadata: {error}"))?;
+        fs::write(replacement.join(".unchartable-backup.json"), body)
+            .map_err(|error| format!("could not preserve the current chart version: {error}"))?;
+    }
+
+    let _ = fs::remove_file(source_path.join(".unchartable-backup.json"));
+    if let Err(error) = fs::rename(&source_path, &destination) {
+        return Err(format!(
+            "could not restore the selected chart version: {error}"
+        ));
+    }
+    prune_chart_backups(&backups, &metadata.chart_id, 3);
+    append_operation(
+        &target,
+        "rollback",
+        &metadata.title,
+        "Restored a previous chart version",
+    );
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn delete_chart_backup(path: String, backup_id: String) -> Result<(), String> {
+    validate_chart_id(&backup_id)?;
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let backups = prepare_backup_directory(&target)?;
+    let item = fs::read_dir(&backups)
+        .map_err(|error| format!("could not scan chart backups: {error}"))?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| backup_metadata(path).is_some_and(|metadata| metadata.backup_id == backup_id))
+        .ok_or_else(|| "this backup could not be found.".to_string())?;
+    fs::remove_dir_all(item).map_err(|error| format!("could not delete this backup: {error}"))
+}
+
+#[tauri::command]
+fn diagnose_library(path: String) -> Result<DiagnosticReport, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let installed = scan_installed(&target)?;
+    let trash = list_trashed_charts(target.to_string_lossy().to_string())?;
+    let backups = list_chart_backups(target.to_string_lossy().to_string())?;
+    let write_probe = target.join(format!(".unchartable-write-test-{}", Uuid::new_v4()));
+    let path_writable = fs::write(&write_probe, b"ok").is_ok();
+    let _ = fs::remove_file(write_probe);
+    Ok(DiagnosticReport {
+        backup_count: backups.len(),
+        backup_size_bytes: backups.iter().map(|item| item.size_bytes).sum(),
+        free_space_bytes: fs2::available_space(&target).unwrap_or(0),
+        invalid_charts: installed.iter().filter(|item| !item.playable).count(),
+        managed_charts: installed.iter().filter(|item| item.managed).count(),
+        manual_charts: installed.iter().filter(|item| !item.managed).count(),
+        path: target.to_string_lossy().to_string(),
+        path_writable,
+        total_charts: installed.len(),
+        total_size_bytes: installed.iter().map(|item| item.size_bytes).sum(),
+        trash_count: trash.len(),
+        trash_size_bytes: trash.iter().map(|item| item.size_bytes).sum(),
+    })
 }
 
 fn chart_matches_manual_identity(
@@ -917,7 +1532,7 @@ async fn find_manual_chart_matches(path: String) -> Result<Vec<ManualChartMatch>
                 let mut url = Url::parse(&format!("{API_ORIGIN}/api/charts")).ok()?;
                 url.query_pairs_mut()
                     .append_pair("page", "0")
-                    .append_pair("pageSize", "24")
+                    .append_pair("pageSize", "100")
                     .append_pair("q", &format!("{} {}", identity.title, identity.artist));
                 let response = client.get(url).send().await.ok()?;
                 if !response.status().is_success() {
@@ -1036,6 +1651,36 @@ fn set_chart_updates(
         .map_err(|error| format!("could not update chart preferences: {error}"))?;
     fs::write(installed_path.join(".unchartable.json"), body)
         .map_err(|error| format!("could not save chart preferences: {error}"))
+}
+
+#[tauri::command]
+fn set_all_chart_updates(path: String, enabled: bool) -> Result<usize, String> {
+    let target = PathBuf::from(path);
+    validate_target_directory(&target)?;
+    let entries =
+        fs::read_dir(&target).map_err(|error| format!("could not scan CustomSongs: {error}"))?;
+    let mut managed = 0usize;
+
+    for entry in entries.flatten() {
+        let installed_path = entry.path();
+        if !installed_path.is_dir() || !is_direct_child(&target, &installed_path) {
+            continue;
+        }
+        let Some(mut metadata) = read_install_metadata(&installed_path) else {
+            continue;
+        };
+        managed += 1;
+        if metadata.updates_enabled == enabled {
+            continue;
+        }
+        metadata.updates_enabled = enabled;
+        let body = serde_json::to_vec_pretty(&metadata)
+            .map_err(|error| format!("could not update chart preferences: {error}"))?;
+        fs::write(installed_path.join(".unchartable.json"), body)
+            .map_err(|error| format!("could not save chart preferences: {error}"))?;
+    }
+
+    Ok(managed)
 }
 
 #[tauri::command]
@@ -1172,6 +1817,58 @@ async fn fetch_chart(chart_id: String) -> Result<serde_json::Value, String> {
         .get("chart")
         .cloned()
         .ok_or_else(|| "UNCHARTABLE did not return a chart.".to_string())
+}
+
+#[tauri::command]
+async fn fetch_packs(page: u32, query: String) -> Result<serde_json::Value, String> {
+    let mut url =
+        Url::parse(&format!("{API_ORIGIN}/api/packs")).map_err(|error| error.to_string())?;
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("page", &page.to_string());
+        params.append_pair("pageSize", "12");
+        if !query.trim().is_empty() {
+            params.append_pair("q", query.trim());
+        }
+    }
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("could not prepare the pack request: {error}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("could not reach unchartable.site: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("UNCHARTABLE returned an error: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("could not read the pack catalog: {error}"))
+}
+
+#[tauri::command]
+async fn fetch_pack(pack_id: String) -> Result<serde_json::Value, String> {
+    validate_chart_id(&pack_id)?;
+    let payload = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("could not prepare the pack request: {error}"))?
+        .get(format!("{API_ORIGIN}/api/packs/{pack_id}"))
+        .send()
+        .await
+        .map_err(|error| format!("could not reach unchartable.site: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("UNCHARTABLE returned an error: {error}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("could not read the pack: {error}"))?;
+
+    payload
+        .get("pack")
+        .cloned()
+        .ok_or_else(|| "UNCHARTABLE did not return a pack.".to_string())
 }
 
 #[tauri::command]
@@ -1365,6 +2062,7 @@ async fn install_chart(
         });
     }
     let folder_name = install_folder_name(&source_path, &staging_path, &title, &charter);
+    let is_update = existing.is_some();
     let destination =
         existing.unwrap_or_else(|| new_install_path(&target, &folder_name, &title, &charter));
     let metadata = InstallMetadata {
@@ -1382,6 +2080,16 @@ async fn install_chart(
         let _ = fs::remove_dir_all(&staging_path);
         return Err(error);
     }
+    append_operation(
+        &target,
+        if is_update { "update" } else { "install" },
+        &title,
+        if is_update {
+            "Installed a newer version from unchartable.site"
+        } else {
+            "Installed from unchartable.site"
+        },
+    );
 
     app.emit(
         "install-progress",
@@ -1404,12 +2112,15 @@ async fn install_chart(
 #[cfg(test)]
 mod tests {
     use super::{
-        InstallMetadata, app_state_for_path, conflicting_install_folder_name,
-        contains_blocked_file, empty_chart_trash, extract_zip_safely, finalize_install,
-        generated_install_folder_name, inspect_manual_chart_identity, install_folder_name,
-        list_trashed_charts, migrate_legacy_trash, new_install_path, parse_allowed_external_url,
-        restore_trashed_chart, sanitize_folder_name, scan_installed, trash_installed_chart,
-        unique_manual_match,
+        InstallMetadata, MAX_ARCHIVE_BYTES, app_state_for_path, backup_directory,
+        conflicting_install_folder_name, contains_blocked_file, empty_chart_trash,
+        export_local_pack, extract_zip_safely, finalize_install, generated_install_folder_name,
+        import_chart_archive, inspect_chart_archive, inspect_manual_chart_identity,
+        install_folder_name, is_repairable_temporary_item, list_chart_backups,
+        list_operation_history, list_trashed_charts, migrate_legacy_trash, new_install_path,
+        parse_allowed_external_url, repair_library, restore_chart_backup, restore_trashed_chart,
+        sanitize_folder_name, scan_installed, set_all_chart_updates, trash_installed_chart,
+        unique_manual_match, validate_local_archive,
     };
     use std::{
         fs::File,
@@ -1417,7 +2128,7 @@ mod tests {
         path::{Path, PathBuf},
     };
     use tempfile::tempdir;
-    use zip::{ZipWriter, write::SimpleFileOptions};
+    use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     #[test]
     fn sanitizes_windows_folder_names() {
@@ -1475,6 +2186,42 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_zip_files_within_the_import_size_limit() {
+        let temporary = tempdir().expect("temporary directory");
+        let wrong_extension = temporary.path().join("chart.rar");
+        std::fs::write(&wrong_extension, b"archive").expect("fake archive");
+        assert!(
+            validate_local_archive(&wrong_extension)
+                .expect_err("RAR should be rejected")
+                .contains("ZIP archives only")
+        );
+
+        let oversized = temporary.path().join("oversized.zip");
+        let oversized_file = File::create(&oversized).expect("oversized fixture");
+        oversized_file
+            .set_len(MAX_ARCHIVE_BYTES + 1)
+            .expect("sparse oversized fixture");
+        assert!(
+            validate_local_archive(&oversized)
+                .expect_err("oversized ZIP should be rejected")
+                .contains("250 MB")
+        );
+    }
+
+    #[test]
+    fn recognizes_only_owned_temporary_items_for_repair() {
+        assert!(is_repairable_temporary_item(
+            ".unchartable-import-abandoned"
+        ));
+        assert!(is_repairable_temporary_item(
+            ".unchartable-503c0c85-d4b6-4366-b18b-bbcc6fb44f63.zip"
+        ));
+        assert!(!is_repairable_temporary_item(".unchartable-history.json"));
+        assert!(!is_repairable_temporary_item(".unchartable-backups"));
+        assert!(!is_repairable_temporary_item(".unchartable-user-folder"));
+    }
+
+    #[test]
     fn opens_only_secure_unchartable_links() {
         assert!(parse_allowed_external_url("https://unchartable.site/charts/example").is_ok());
         assert!(parse_allowed_external_url("http://unchartable.site/charts/example").is_err());
@@ -1525,6 +2272,78 @@ mod tests {
         let result = extract_zip_safely(&archive_path, &staging_path);
         assert!(result.is_err());
         assert!(!temporary.path().join("outside.txt").exists());
+    }
+
+    #[test]
+    fn rejects_imports_with_executables_or_incomplete_chart_contents() {
+        let temporary = tempdir().expect("temporary directory");
+        let custom_songs = temporary.path().join("CustomSongs");
+        std::fs::create_dir_all(&custom_songs).expect("CustomSongs");
+
+        let unsafe_archive = temporary.path().join("unsafe.zip");
+        let unsafe_file = File::create(&unsafe_archive).expect("unsafe archive");
+        let mut unsafe_zip = ZipWriter::new(unsafe_file);
+        unsafe_zip
+            .start_file("chart.txt", SimpleFileOptions::default())
+            .expect("chart entry");
+        unsafe_zip
+            .write_all(b"Title:Unsafe\nArtist:Test\nCreator:Alice")
+            .expect("chart data");
+        unsafe_zip
+            .start_file("audio.wav", SimpleFileOptions::default())
+            .expect("audio entry");
+        unsafe_zip.write_all(b"audio").expect("audio data");
+        unsafe_zip
+            .start_file("setup.exe", SimpleFileOptions::default())
+            .expect("executable entry");
+        unsafe_zip
+            .write_all(b"executable")
+            .expect("executable data");
+        unsafe_zip.finish().expect("finish unsafe archive");
+        assert!(
+            inspect_chart_archive(
+                unsafe_archive.to_string_lossy().to_string(),
+                custom_songs.to_string_lossy().to_string(),
+            )
+            .expect_err("executable payload should be rejected")
+            .contains("blocked executable")
+        );
+
+        let chart_only_archive = temporary.path().join("chart-only.zip");
+        let chart_only_file = File::create(&chart_only_archive).expect("chart-only archive");
+        let mut chart_only_zip = ZipWriter::new(chart_only_file);
+        chart_only_zip
+            .start_file("chart.txt", SimpleFileOptions::default())
+            .expect("chart entry");
+        chart_only_zip
+            .write_all(b"Title:No Audio\nArtist:Test\nCreator:Alice")
+            .expect("chart data");
+        chart_only_zip.finish().expect("finish chart-only archive");
+        assert!(
+            inspect_chart_archive(
+                chart_only_archive.to_string_lossy().to_string(),
+                custom_songs.to_string_lossy().to_string(),
+            )
+            .expect_err("chart without audio should be rejected")
+            .contains("no supported audio")
+        );
+
+        let audio_only_archive = temporary.path().join("audio-only.zip");
+        let audio_only_file = File::create(&audio_only_archive).expect("audio-only archive");
+        let mut audio_only_zip = ZipWriter::new(audio_only_file);
+        audio_only_zip
+            .start_file("audio.wav", SimpleFileOptions::default())
+            .expect("audio entry");
+        audio_only_zip.write_all(b"audio").expect("audio data");
+        audio_only_zip.finish().expect("finish audio-only archive");
+        assert!(
+            inspect_chart_archive(
+                audio_only_archive.to_string_lossy().to_string(),
+                custom_songs.to_string_lossy().to_string(),
+            )
+            .expect_err("audio without chart should be rejected")
+            .contains("no chart .txt")
+        );
     }
 
     #[test]
@@ -1585,6 +2404,43 @@ mod tests {
                 .iter()
                 .any(|item| item.title == "Manual Song" && !item.managed)
         );
+    }
+
+    #[test]
+    fn enables_updates_for_every_managed_chart_without_claiming_manual_charts() {
+        let temporary = tempdir().expect("temporary directory");
+        let managed = temporary.path().join("Managed Song");
+        let manual = temporary.path().join("Manual Song");
+        std::fs::create_dir_all(&managed).expect("managed directory");
+        std::fs::create_dir_all(&manual).expect("manual directory");
+        let metadata = InstallMetadata {
+            chart_id: "503c0c85-d4b6-4366-b18b-bbcc6fb44f63".to_string(),
+            title: "Managed Song".to_string(),
+            artist: "Artist".to_string(),
+            charter: "Charter".to_string(),
+            archive_sha256: "hash".to_string(),
+            source: "https://unchartable.site".to_string(),
+            updated_at: None,
+            installed_at: None,
+            updates_enabled: false,
+        };
+        std::fs::write(
+            managed.join(".unchartable.json"),
+            serde_json::to_vec(&metadata).expect("metadata"),
+        )
+        .expect("metadata file");
+
+        assert_eq!(
+            set_all_chart_updates(temporary.path().to_string_lossy().to_string(), true)
+                .expect("bulk updates"),
+            1
+        );
+        assert!(
+            super::read_install_metadata(&managed)
+                .expect("updated metadata")
+                .updates_enabled
+        );
+        assert!(!manual.join(".unchartable.json").exists());
     }
 
     #[test]
@@ -1794,6 +2650,127 @@ mod tests {
         );
         assert!(destination.join(".unchartable.json").is_file());
         assert!(!staging.exists());
+
+        let backups = list_chart_backups(temporary.path().to_string_lossy().to_string())
+            .expect("list saved versions");
+        assert_eq!(backups.len(), 1);
+        let saved = &backups[0];
+        assert!(
+            backup_directory(temporary.path())
+                .join(&saved.backup_id)
+                .join("old.txt")
+                .is_file()
+        );
+
+        restore_chart_backup(
+            temporary.path().to_string_lossy().to_string(),
+            saved.backup_id.clone(),
+        )
+        .expect("restore previous version");
+        assert!(destination.join("old.txt").is_file());
+        assert!(!destination.join("chart.txt").exists());
+    }
+
+    #[test]
+    fn imports_detects_conflicts_exports_and_repairs_local_charts() {
+        let temporary = tempdir().expect("temporary directory");
+        let custom_songs = temporary.path().join("CustomSongs");
+        std::fs::create_dir_all(&custom_songs).expect("CustomSongs");
+        let archive_path = temporary.path().join("manual-chart.zip");
+        let archive_file = File::create(&archive_path).expect("archive file");
+        let mut archive = ZipWriter::new(archive_file);
+        archive
+            .start_file("Manual Song/chart.txt", SimpleFileOptions::default())
+            .expect("chart entry");
+        archive
+            .write_all(
+                b"[Metadata]\nTitle:Manual Song\nArtist:Manual Artist\nCreator:Alice\nTags:{\"SongLength\":120}",
+            )
+            .expect("chart contents");
+        archive
+            .start_file("Manual Song/audio.wav", SimpleFileOptions::default())
+            .expect("audio entry");
+        archive.write_all(b"audio").expect("audio contents");
+        archive.finish().expect("finish archive");
+
+        let target = custom_songs.to_string_lossy().to_string();
+        let first_inspection =
+            inspect_chart_archive(archive_path.to_string_lossy().to_string(), target.clone())
+                .expect("inspect import");
+        assert_eq!(first_inspection.title, "Manual Song");
+        assert!(first_inspection.conflict_path.is_none());
+
+        let installed = import_chart_archive(
+            archive_path.to_string_lossy().to_string(),
+            target.clone(),
+            false,
+        )
+        .expect("import chart");
+        let installed = PathBuf::from(installed);
+        assert!(installed.join("chart.txt").is_file());
+        assert!(installed.join("audio.wav").is_file());
+
+        let conflict =
+            inspect_chart_archive(archive_path.to_string_lossy().to_string(), target.clone())
+                .expect("inspect conflict");
+        assert_eq!(
+            conflict.conflict_path.as_deref(),
+            Some(installed.to_string_lossy().as_ref())
+        );
+        assert!(
+            import_chart_archive(
+                archive_path.to_string_lossy().to_string(),
+                target.clone(),
+                false,
+            )
+            .expect_err("matching chart should require an explicit choice")
+            .contains("already installed")
+        );
+        let duplicate = import_chart_archive(
+            archive_path.to_string_lossy().to_string(),
+            target.clone(),
+            true,
+        )
+        .expect("keep both");
+        assert_ne!(PathBuf::from(&duplicate), installed);
+        assert!(PathBuf::from(duplicate).join("chart.txt").is_file());
+
+        let export_path = temporary.path().join("local-pack.zip");
+        export_local_pack(
+            target.clone(),
+            export_path.to_string_lossy().to_string(),
+            vec![installed.to_string_lossy().to_string()],
+            "Test Pack".to_string(),
+        )
+        .expect("export local pack");
+        assert!(export_path.is_file());
+        let exported = ZipArchive::new(File::open(export_path).expect("pack archive"))
+            .expect("valid pack ZIP");
+        assert!(exported.len() >= 2);
+
+        let abandoned = custom_songs.join(".unchartable-import-abandoned");
+        let preserved = custom_songs.join(".unchartable-user-folder");
+        let invalid = custom_songs.join("Incomplete Song");
+        std::fs::create_dir_all(&abandoned).expect("abandoned temporary directory");
+        std::fs::create_dir_all(&preserved).expect("preserved hidden directory");
+        std::fs::create_dir_all(&invalid).expect("invalid chart directory");
+        std::fs::write(invalid.join("chart.txt"), b"chart").expect("invalid chart");
+
+        let report = repair_library(target.clone()).expect("repair library");
+        assert_eq!(report.removed_temporary_items, 1);
+        assert!(!abandoned.exists());
+        assert!(preserved.exists());
+        assert!(
+            report
+                .invalid_chart_paths
+                .iter()
+                .any(|path| Path::new(path) == invalid)
+        );
+
+        let history = list_operation_history(target).expect("operation history");
+        assert!(history.iter().any(|record| record.action == "import"));
+        assert!(history.iter().any(|record| record.action == "export"));
+        assert!(history.iter().any(|record| record.action == "repair"));
     }
 }
 
@@ -1816,7 +2793,51 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register_all()?;
             }
+            let show = MenuItem::with_id(app, "show", "Open UNCHARTABLE", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            TrayIconBuilder::new()
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .ok_or("missing app icon")?,
+                )
+                .tooltip("UNCHARTABLE")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             adopt_manual_chart,
@@ -1826,14 +2847,26 @@ pub fn run() {
             find_manual_chart_matches,
             get_app_state,
             empty_chart_trash,
+            delete_chart_backup,
+            diagnose_library,
+            export_local_pack,
             fetch_chart,
+            fetch_pack,
             install_chart,
+            import_chart_archive,
+            inspect_chart_archive,
+            fetch_packs,
             launch_unbeatable,
+            list_chart_backups,
             list_installed_charts,
+            list_operation_history,
             list_trashed_charts,
             open_custom_songs_folder,
             open_external_url,
+            repair_library,
             restore_trashed_chart,
+            restore_chart_backup,
+            set_all_chart_updates,
             set_chart_updates,
             trash_installed_chart,
             validate_custom_songs_path

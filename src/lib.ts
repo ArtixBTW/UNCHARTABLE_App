@@ -1,5 +1,9 @@
 export const API_ORIGIN = "https://unchartable.site";
 
+export function isSingleZipDrop(paths: string[]) {
+  return paths.length === 1 && paths[0].toLowerCase().endsWith(".zip");
+}
+
 export type DifficultyLevel = {
   charterName?: string | null;
   difficulty: string;
@@ -33,6 +37,24 @@ export type ChartCatalog = {
   nextPage: number | null;
 };
 
+export type ChartPack = {
+  chartCount: number;
+  charts: Chart[];
+  description: string;
+  id: string;
+  name: string;
+  owner?: {
+    displayName?: string | null;
+  } | null;
+  updatedAt: string;
+};
+
+export type PackCatalog = {
+  count: number;
+  nextPage: number | null;
+  packs: ChartPack[];
+};
+
 export type AppState = {
   customSongsPath: string;
   directoryExists: boolean;
@@ -42,7 +64,7 @@ export type InstallProgress = {
   chartId: string;
   downloadedBytes: number;
   totalBytes: number | null;
-  stage: "requesting" | "downloading" | "installing" | "complete" | "failed";
+  stage: "queued" | "requesting" | "downloading" | "installing" | "complete" | "failed";
 };
 
 export type InstallResult = {
@@ -52,6 +74,7 @@ export type InstallResult = {
 };
 
 export type InstalledChart = {
+  audioDurationSeconds: number | null;
   artist: string | null;
   chartId: string | null;
   charter: string | null;
@@ -86,6 +109,60 @@ export type UpdateCandidate = {
   latestVersion: string;
 };
 
+export type BackupItem = {
+  backupId: string;
+  chartId: string;
+  createdAt: string;
+  folderName: string;
+  sizeBytes: number;
+  title: string;
+};
+
+export type DiagnosticReport = {
+  backupCount: number;
+  backupSizeBytes: number;
+  freeSpaceBytes: number;
+  invalidCharts: number;
+  managedCharts: number;
+  manualCharts: number;
+  path: string;
+  pathWritable: boolean;
+  totalCharts: number;
+  totalSizeBytes: number;
+  trashCount: number;
+  trashSizeBytes: number;
+};
+
+export type ImportArchiveInspection = {
+  archivePath: string;
+  archiveSizeBytes: number;
+  artist: string;
+  charter: string;
+  conflictPath: string | null;
+  title: string;
+};
+
+export type RepairReport = {
+  invalidChartPaths: string[];
+  removedTemporaryItems: number;
+};
+
+export type OperationRecord = {
+  action: string;
+  createdAt: string;
+  detail: string;
+  title: string;
+};
+
+export type LocalPack = {
+  chartPaths: string[];
+  createdAt: string;
+  id: string;
+  name: string;
+};
+
+export type LibraryFilter = "all" | "updates" | "managed" | "manual" | "problems";
+
 export function chartContentVersion(chart: Pick<Chart, "contentUpdatedAt" | "updatedAt">) {
   return chart.contentUpdatedAt || chart.updatedAt;
 }
@@ -113,6 +190,40 @@ export function parseInstallDeepLink(value: string) {
   } catch {
     return null;
   }
+}
+
+export function normalizeChartIdentity(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "");
+}
+
+export function chartMatchesInstalledChart(chart: Chart, installed: InstalledChart) {
+  if (installed.chartId) return installed.chartId === chart.id;
+  if (!installed.playable) return false;
+
+  const titleMatches = normalizeChartIdentity(installed.title) === normalizeChartIdentity(chart.title);
+  const artistMatches = normalizeChartIdentity(installed.artist) === normalizeChartIdentity(chart.artist);
+  const localCharter = normalizeChartIdentity(installed.charter);
+  if (!titleMatches || !artistMatches || !localCharter) return false;
+
+  const siteCharters = new Set(
+    [
+      chart.charterName,
+      chart.submitter?.displayName,
+      chart.submitter?.discordUsername,
+      ...chart.difficultyLevels.map((level) => level.charterName)
+    ]
+      .map(normalizeChartIdentity)
+      .filter(Boolean)
+  );
+  if (!siteCharters.has(localCharter)) return false;
+
+  return installed.audioDurationSeconds === null ||
+    chart.audioDurationSeconds === null ||
+    Math.abs(installed.audioDurationSeconds - chart.audioDurationSeconds) <= 3;
 }
 
 export function difficultyClass(difficulty: string) {
