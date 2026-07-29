@@ -1,9 +1,13 @@
 param(
-  [string]$Version = "0.1.0"
+  [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+$packageJson = Get-Content -LiteralPath (Join-Path $root "package.json") -Raw | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  $Version = [string]$packageJson.version
+}
 $source = Join-Path $root "src-tauri\target\release\unchartable-app.exe"
 $output = Join-Path $root "output\release"
 $executableName = "UNCHARTABLE-v$Version.exe"
