@@ -57,6 +57,16 @@ src-tauri/icons/      application icons
 .github/workflows/    verification and release builds
 ```
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by
+SignPath Foundation.
+
+Release commits and workflows are maintained by the repository owner. GitHub
+Actions builds release artifacts from tagged source, and SignPath approval is
+restricted to reviewed release builds. UNCHARTABLE does not collect personal
+data; its privacy behavior is documented in the [Privacy](#privacy) section.
+
 ## License
 
 The source code is available under the [MIT License](LICENSE). UNCHARTABLE and
