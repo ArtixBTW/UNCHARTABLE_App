@@ -158,6 +158,7 @@ struct ImportArchiveInspection {
     archive_size_bytes: u64,
     artist: String,
     charter: String,
+    conflict_folder_name: Option<String>,
     conflict_path: Option<String>,
     title: String,
 }
@@ -919,6 +920,11 @@ fn inspect_archive_for_import(
         return Err("the chart TXT is missing a title or artist.".to_string());
     }
     let conflict = matching_local_chart(target, &inspection.identity);
+    let conflict_folder_name = conflict
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned);
     let result = ImportArchiveInspection {
         archive_path: archive_path.to_string_lossy().to_string(),
         archive_size_bytes,
@@ -928,6 +934,7 @@ fn inspect_archive_for_import(
             .creator_label
             .clone()
             .unwrap_or_else(|| "unknown charter".to_string()),
+        conflict_folder_name,
         conflict_path: conflict.map(|path| path.to_string_lossy().to_string()),
         title: inspection.identity.title.clone(),
     };
@@ -1827,6 +1834,7 @@ async fn fetch_packs(page: u32, query: String) -> Result<serde_json::Value, Stri
         let mut params = url.query_pairs_mut();
         params.append_pair("page", &page.to_string());
         params.append_pair("pageSize", "12");
+        params.append_pair("charts", "all");
         if !query.trim().is_empty() {
             params.append_pair("q", query.trim());
         }

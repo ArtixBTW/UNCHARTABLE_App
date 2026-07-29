@@ -138,6 +138,7 @@ export type ImportArchiveInspection = {
   archiveSizeBytes: number;
   artist: string;
   charter: string;
+  conflictFolderName: string | null;
   conflictPath: string | null;
   title: string;
 };

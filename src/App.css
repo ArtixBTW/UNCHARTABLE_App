@@ -954,7 +954,15 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface-panel);
+  cursor: pointer;
   padding: 11px 12px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.installed-row:hover,
+.installed-row-selected {
+  border-color: color-mix(in srgb, var(--punch) 72%, var(--line));
+  background: color-mix(in srgb, var(--punch) 8%, var(--surface-panel));
 }
 
 .selection-button {
@@ -1106,9 +1114,13 @@ h1 {
   display: grid;
   max-height: 280px;
   gap: 5px;
+  overscroll-behavior: contain;
   overflow-y: auto;
   margin: 10px 0;
-  padding-right: 4px;
+  padding-right: 7px;
+  scrollbar-color: var(--punch) var(--surface-soft);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
 }
 
 .pack-chart {

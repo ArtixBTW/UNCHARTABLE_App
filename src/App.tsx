@@ -5,7 +5,6 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Archive,
-  Boxes,
   Check,
   CheckSquare,
   ChevronLeft,
@@ -25,7 +24,7 @@ import {
   Link2,
   LoaderCircle,
   Moon,
-  PackageOpen,
+  Package,
   PackageCheck,
   Pause,
   Play,
@@ -180,7 +179,7 @@ async function fetchChart(chartId: string) {
 }
 
 async function fetchPacks(query: string, page: number) {
-  const cacheKey = `packs:${query}:${page}`;
+  const cacheKey = `packs:full:${query}:${page}`;
   const cached = readApiCache<PackCatalog>(cacheKey);
   if (cached) return cached;
   if (isTauri()) {
@@ -189,6 +188,7 @@ async function fetchPacks(query: string, page: number) {
     return result;
   }
   const params = new URLSearchParams({ page: String(page), pageSize: "12" });
+  params.set("charts", "all");
   if (query) params.set("q", query);
   const response = await fetch(`${API_ORIGIN}/api/packs?${params}`);
   if (!response.ok) throw new Error("Could not load packs.");
@@ -1080,7 +1080,7 @@ function App() {
         </button>
         <nav aria-label="Application">
           <NavButton active={view === "charts"} icon={<Library />} label="charts" onClick={() => setView("charts")} />
-          <NavButton active={view === "packs"} icon={<Boxes />} label="packs" onClick={() => setView("packs")} />
+          <NavButton active={view === "packs"} icon={<Package />} label="packs" onClick={() => setView("packs")} />
           <NavButton
             active={view === "downloads"}
             badge={activeInstalls || undefined}
@@ -1238,7 +1238,7 @@ function App() {
             ) : packsLoading ? (
               <section className="loading-state"><LoaderCircle /><span>loading packs</span></section>
             ) : packCatalog.packs.length === 0 ? (
-              <section className="empty-state"><Boxes /><h2>no packs found</h2><p>Try a different search.</p></section>
+              <section className="empty-state"><Package /><h2>no packs found</h2><p>Try a different search.</p></section>
             ) : (
               <section className="pack-grid">
                 {packCatalog.packs.map((pack) => {
@@ -1274,7 +1274,7 @@ function App() {
                         })}
                       </div>
                       <button className="pack-install-button" disabled={remaining === 0} onClick={() => void installPack(pack)} type="button">
-                        <PackageOpen /> {remaining === 0 ? "selected charts installed" : `install ${remaining} selected`}
+                        <Package /> {remaining === 0 ? "selected charts installed" : `install ${remaining} selected`}
                       </button>
                     </article>
                   );
@@ -1369,9 +1369,11 @@ function App() {
                   <p>{importInspection.artist} / charted by {importInspection.charter}</p>
                   <small>{formatBytes(importInspection.archiveSizeBytes)}</small>
                   {importInspection.conflictPath ? (
-                    <small className="import-conflict"><CircleAlert /> A matching chart already exists at {importInspection.conflictPath}</small>
+                    <small className="import-conflict">
+                      <CircleAlert /> already installed in &quot;{importInspection.conflictFolderName || "CustomSongs"}&quot;. keep both to install another copy.
+                    </small>
                   ) : (
-                    <small className="import-ready"><ShieldCheck /> No matching local chart was found.</small>
+                    <small className="import-ready"><ShieldCheck /> ready to install. no matching local chart was found.</small>
                   )}
                 </div>
                 <div className="import-review-actions">
@@ -1455,7 +1457,7 @@ function App() {
                   <div className="batch-actions">
                     <span>{selectedInstalled.size} selected</span>
                     <button onClick={() => void enableSelectedUpdates()} type="button"><RefreshCw /> enable updates</button>
-                    <button onClick={createLocalPack} type="button"><Boxes /> create pack</button>
+                    <button onClick={createLocalPack} type="button"><Package /> create pack</button>
                     <button className="danger-button" onClick={() => void removeSelectedCharts()} type="button"><Trash2 /> trash</button>
                     <button onClick={() => setSelectedInstalled(new Set())} type="button"><X /> clear</button>
                   </div>
@@ -1476,7 +1478,14 @@ function App() {
                 {pagedInstalledCharts.map((chart) => {
                   const manualMatch = manualMatchesByPath.get(chart.path);
                   return (
-                  <article className="installed-row" key={chart.path}>
+                  <article
+                    className={selectedInstalled.has(chart.path) ? "installed-row installed-row-selected" : "installed-row"}
+                    key={chart.path}
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("button")) return;
+                      toggleInstalledSelection(chart.path);
+                    }}
+                  >
                     <button
                       aria-label={`${selectedInstalled.has(chart.path) ? "Deselect" : "Select"} ${chart.title}`}
                       className="selection-button"
@@ -1567,7 +1576,7 @@ function App() {
                 <div className="local-pack-list">
                   {localPacks.map((pack) => (
                     <article className="local-pack-row" key={pack.id}>
-                      <Boxes />
+                      <Package />
                       <div><strong>{pack.name}</strong><small>{pack.chartPaths.length} charts / created {new Date(pack.createdAt).toLocaleDateString()}</small></div>
                       <button onClick={() => void exportLocalPack(pack)} type="button"><Archive /> export ZIP</button>
                       <button className="danger-icon" onClick={() => setLocalPacks((current) => current.filter((item) => item.id !== pack.id))} title="delete local pack" type="button"><Trash2 /></button>
