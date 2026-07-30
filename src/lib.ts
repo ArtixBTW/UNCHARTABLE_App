@@ -1,7 +1,7 @@
 export const API_ORIGIN = "https://unchartable.site";
 
-export function isSingleZipDrop(paths: string[]) {
-  return paths.length === 1 && paths[0].toLowerCase().endsWith(".zip");
+export function isArchiveDrop(paths: string[]) {
+  return paths.length > 0 && paths.every((path) => /\.(zip|7z|rar)$/i.test(path));
 }
 
 export type DifficultyLevel = {
@@ -134,6 +134,7 @@ export type DiagnosticReport = {
 };
 
 export type ImportArchiveInspection = {
+  archiveFormat: "zip" | "7z" | "rar";
   archivePath: string;
   archiveSizeBytes: number;
   artist: string;
@@ -161,8 +162,6 @@ export type LocalPack = {
   id: string;
   name: string;
 };
-
-export type LibraryFilter = "all" | "updates" | "managed" | "manual" | "problems";
 
 export function chartContentVersion(chart: Pick<Chart, "contentUpdatedAt" | "updatedAt">) {
   return chart.contentUpdatedAt || chart.updatedAt;

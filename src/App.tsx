@@ -12,7 +12,6 @@ import {
   CircleAlert,
   Download,
   ExternalLink,
-  Filter,
   Folder,
   FolderOpen,
   Gauge,
@@ -54,7 +53,7 @@ import {
   difficultyClass,
   formatBytes,
   formatDuration,
-  isSingleZipDrop,
+  isArchiveDrop,
   parseInstallDeepLink,
   type AppState,
   type BackupItem,
@@ -66,7 +65,6 @@ import {
   type InstallProgress,
   type InstallResult,
   type InstalledChart,
-  type LibraryFilter,
   type LocalPack,
   type ManualChartMatch,
   type PackCatalog,
@@ -237,12 +235,11 @@ function App() {
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [repairReport, setRepairReport] = useState<RepairReport | null>(null);
   const [repairLoading, setRepairLoading] = useState(false);
-  const [importInspection, setImportInspection] = useState<ImportArchiveInspection | null>(null);
+  const [importInspections, setImportInspections] = useState<ImportArchiveInspection[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [dropState, setDropState] = useState<"valid" | "invalid" | null>(null);
   const [localPacks, setLocalPacks] = useState<LocalPack[]>(readLocalPacks);
   const [appVisible, setAppVisible] = useState(() => !document.hidden);
-  const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>("all");
   const [installedVisibleLimit, setInstalledVisibleLimit] = useState(40);
   const [selectedInstalled, setSelectedInstalled] = useState<Set<string>>(new Set());
   const [packCatalog, setPackCatalog] = useState<PackCatalog>({ packs: [], count: 0, nextPage: null });
@@ -260,17 +257,30 @@ function App() {
     () => localStorage.getItem("unchartable:auto-updates") !== "off"
   );
 
-  const inspectArchive = useCallback(async (archivePath: string) => {
+  const inspectArchives = useCallback(async (archivePaths: string[]) => {
     if (!isTauri() || !targetDirectory || importLoading) return;
     setImportLoading(true);
     try {
-      setImportInspection(await invoke<ImportArchiveInspection>("inspect_chart_archive", {
-        archivePath,
-        targetDirectory
-      }));
-      setUpdateMessage("");
+      const inspections: ImportArchiveInspection[] = [];
+      const failures: string[] = [];
+      for (const archivePath of [...new Set(archivePaths)]) {
+        try {
+          inspections.push(await invoke<ImportArchiveInspection>("inspect_chart_archive", {
+            archivePath,
+            targetDirectory
+          }));
+        } catch (error) {
+          failures.push(`${archivePath.split(/[\\/]/).pop() || "archive"}: ${String(error)}`);
+        }
+      }
+      setImportInspections(inspections);
+      setUpdateMessage(
+        failures.length
+          ? `${failures.length} archive${failures.length === 1 ? "" : "s"} could not be validated. ${failures[0]}`
+          : ""
+      );
     } catch (error) {
-      setImportInspection(null);
+      setImportInspections([]);
       setUpdateMessage(`Import validation failed: ${String(error)}`);
     } finally {
       setImportLoading(false);
@@ -316,7 +326,7 @@ function App() {
     void getCurrentWebview().onDragDropEvent((event) => {
       if (disposed) return;
       if (event.payload.type === "enter") {
-        setDropState(isSingleZipDrop(event.payload.paths) ? "valid" : "invalid");
+        setDropState(isArchiveDrop(event.payload.paths) ? "valid" : "invalid");
         return;
       }
       if (event.payload.type === "over") return;
@@ -326,11 +336,11 @@ function App() {
       }
       setDropState(null);
       setView("downloads");
-      if (!isSingleZipDrop(event.payload.paths)) {
-        setUpdateMessage("Drop one ZIP chart archive at a time.");
+      if (!isArchiveDrop(event.payload.paths)) {
+        setUpdateMessage("Drop only ZIP, 7Z, or RAR chart archives.");
         return;
       }
-      void inspectArchive(event.payload.paths[0]);
+      void inspectArchives(event.payload.paths);
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -339,7 +349,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [inspectArchive]);
+  }, [inspectArchives]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -524,29 +534,19 @@ function App() {
   );
   const canEnableAllUpdates = manualMatches.length > 0 ||
     installedCharts.some((chart) => chart.managed && !chart.updatesEnabled);
-  const updateIds = useMemo(
-    () => new Set(updateCandidates.map((candidate) => candidate.chart.id)),
-    [updateCandidates]
-  );
   const visibleInstalledCharts = useMemo(() => {
     const needle = installedQuery.trim().toLocaleLowerCase();
     return installedCharts.filter((chart) => {
-      const matchesQuery = !needle || [chart.title, chart.artist, chart.charter, chart.folderName]
+      return !needle || [chart.title, chart.artist, chart.charter, chart.folderName]
         .filter(Boolean)
         .some((value) => value!.toLocaleLowerCase().includes(needle));
-      if (!matchesQuery) return false;
-      if (libraryFilter === "updates") return Boolean(chart.chartId && updateIds.has(chart.chartId));
-      if (libraryFilter === "managed") return chart.managed;
-      if (libraryFilter === "manual") return !chart.managed;
-      if (libraryFilter === "problems") return !chart.playable;
-      return true;
     });
-  }, [installedCharts, installedQuery, libraryFilter, updateIds]);
+  }, [installedCharts, installedQuery]);
   const pagedInstalledCharts = visibleInstalledCharts.slice(0, installedVisibleLimit);
 
   useEffect(() => {
     setInstalledVisibleLimit(40);
-  }, [installedQuery, libraryFilter]);
+  }, [installedQuery]);
 
   function togglePreview(chart: Chart) {
     const current = previewAudioRef.current;
@@ -923,28 +923,48 @@ function App() {
     if (!isTauri() || !targetDirectory || importLoading) return;
     const selected = await open({
       directory: false,
-      filters: [{ name: "Chart ZIP", extensions: ["zip"] }],
-      multiple: false,
-      title: "Import a chart ZIP"
+      filters: [{ name: "Chart archive", extensions: ["zip", "7z", "rar"] }],
+      multiple: true,
+      title: "Import chart archives"
     });
-    if (!selected || Array.isArray(selected)) return;
-    await inspectArchive(selected);
+    if (!selected) return;
+    await inspectArchives(Array.isArray(selected) ? selected : [selected]);
   }
 
-  async function confirmChartImport(allowDuplicate: boolean) {
-    if (!importInspection || !targetDirectory) return;
+  async function confirmChartImports() {
+    if (!importInspections.length || !targetDirectory) return;
+    const singleConflict = importInspections.length === 1 && Boolean(importInspections[0].conflictPath);
+    const pending = singleConflict
+      ? importInspections
+      : importInspections.filter((inspection) => !inspection.conflictPath);
+    if (!pending.length) {
+      setUpdateMessage("Every selected chart is already installed.");
+      return;
+    }
     setImportLoading(true);
+    let imported = 0;
+    let failed = 0;
     try {
-      await invoke("import_chart_archive", {
-        allowDuplicate,
-        archivePath: importInspection.archivePath,
-        targetDirectory
-      });
-      setUpdateMessage(`${importInspection.title} imported successfully.`);
-      setImportInspection(null);
+      for (const inspection of pending) {
+        try {
+          await invoke("import_chart_archive", {
+            allowDuplicate: singleConflict,
+            archivePath: inspection.archivePath,
+            targetDirectory
+          });
+          imported += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      const skipped = importInspections.length - pending.length;
+      setUpdateMessage([
+        `${imported} chart${imported === 1 ? "" : "s"} imported.`,
+        skipped ? `${skipped} already installed.` : "",
+        failed ? `${failed} failed.` : ""
+      ].filter(Boolean).join(" "));
+      setImportInspections([]);
       await refreshLibrary();
-    } catch (error) {
-      setUpdateMessage(`Could not import this chart: ${String(error)}`);
     } finally {
       setImportLoading(false);
     }
@@ -1343,7 +1363,7 @@ function App() {
               <div className="download-header-actions">
                 <span className="catalog-total">{activeInstalls} active</span>
                 <button disabled={importLoading} onClick={() => void chooseChartArchive()} type="button">
-                  <Upload /> {importLoading ? "checking ZIP" : "import ZIP"}
+                  <Upload /> {importLoading ? "checking archive" : "import archive"}
                 </button>
                 <button disabled={repairLoading} onClick={() => void repairLocalLibrary()} type="button">
                   <Hammer className={repairLoading ? "spin" : ""} /> repair
@@ -1360,27 +1380,41 @@ function App() {
               </div>
             </header>
             {updateMessage ? <div className="status-banner"><PackageCheck /> {updateMessage}</div> : null}
-            {importInspection ? (
-              <section className="import-review">
-                <Archive />
-                <div>
-                  <p className="kicker">validated local archive</p>
-                  <h2>{importInspection.title}</h2>
-                  <p>{importInspection.artist} / charted by {importInspection.charter}</p>
-                  <small>{formatBytes(importInspection.archiveSizeBytes)}</small>
-                  {importInspection.conflictPath ? (
-                    <small className="import-conflict">
-                      <CircleAlert /> already installed in &quot;{importInspection.conflictFolderName || "CustomSongs"}&quot;. keep both to install another copy.
-                    </small>
-                  ) : (
-                    <small className="import-ready"><ShieldCheck /> ready to install. no matching local chart was found.</small>
-                  )}
+            {importInspections.length ? (
+              <section className={importInspections.every((inspection) => inspection.conflictPath) ? "import-review import-review-conflict" : "import-review import-review-ready"}>
+                <div className="import-review-icon" aria-hidden="true"><Archive /></div>
+                <div className="import-review-copy">
+                  <div className="import-review-heading">
+                    <p className="kicker">{importInspections.length === 1 ? "archive checked" : `${importInspections.length} archives checked`}</p>
+                  </div>
+                  <div className="import-review-list">
+                    {importInspections.map((inspection, index) => (
+                      <article className={inspection.conflictPath ? "import-review-item import-review-item-conflict" : "import-review-item"} key={`${inspection.archivePath}-${index}`}>
+                        <div>
+                          <h2>{inspection.title}</h2>
+                          <div className="import-review-meta">
+                            <span>{inspection.artist}</span>
+                            <span>charted by {inspection.charter}</span>
+                            <span>{formatBytes(inspection.archiveSizeBytes)}</span>
+                          </div>
+                        </div>
+                        <span className="archive-format">{inspection.archiveFormat}</span>
+                        {inspection.conflictPath
+                          ? <CircleAlert aria-label="already installed" />
+                          : <ShieldCheck aria-label="ready to install" />}
+                      </article>
+                    ))}
+                  </div>
                 </div>
                 <div className="import-review-actions">
-                  <button disabled={importLoading} onClick={() => void confirmChartImport(Boolean(importInspection.conflictPath))} type="button">
-                    <Upload /> {importInspection.conflictPath ? "keep both" : "install"}
+                  <button className="import-confirm-button" disabled={importLoading} onClick={() => void confirmChartImports()} type="button">
+                    <Upload /> {
+                      importInspections.length === 1 && importInspections[0].conflictPath
+                        ? "install another copy"
+                        : `install ${importInspections.filter((inspection) => !inspection.conflictPath).length}`
+                    }
                   </button>
-                  <button className="secondary-button" onClick={() => setImportInspection(null)} type="button"><X /> cancel</button>
+                  <button className="import-cancel-button" onClick={() => setImportInspections([])} type="button"><X /> cancel</button>
                 </div>
               </section>
             ) : null}
@@ -1439,21 +1473,8 @@ function App() {
                   <span>{visibleInstalledCharts.length}</span>
                 </div>
               </div>
-              <div className="library-toolbar">
-                <div className="library-filters" aria-label="Library filters">
-                  {(["all", "updates", "managed", "manual", "problems"] as LibraryFilter[]).map((filter) => (
-                    <button
-                      aria-pressed={libraryFilter === filter}
-                      className={libraryFilter === filter ? "library-filter library-filter-active" : "library-filter"}
-                      key={filter}
-                      onClick={() => setLibraryFilter(filter)}
-                      type="button"
-                    >
-                      <Filter /> {filter}
-                    </button>
-                  ))}
-                </div>
-                {selectedInstalled.size > 0 ? (
+              {selectedInstalled.size > 0 ? (
+                <div className="library-toolbar">
                   <div className="batch-actions">
                     <span>{selectedInstalled.size} selected</span>
                     <button onClick={() => void enableSelectedUpdates()} type="button"><RefreshCw /> enable updates</button>
@@ -1461,8 +1482,8 @@ function App() {
                     <button className="danger-button" onClick={() => void removeSelectedCharts()} type="button"><Trash2 /> trash</button>
                     <button onClick={() => setSelectedInstalled(new Set())} type="button"><X /> clear</button>
                   </div>
-                ) : null}
-              </div>
+                </div>
+              ) : null}
             {libraryLoading && installedCharts.length === 0 ? (
               <section className="loading-state"><LoaderCircle /><span>scanning CustomSongs</span></section>
             ) : installedCharts.length === 0 ? (
@@ -1716,8 +1737,8 @@ function App() {
         <div className={dropState === "valid" ? "drop-overlay drop-overlay-valid" : "drop-overlay drop-overlay-invalid"}>
           <div>
             {dropState === "valid" ? <Upload /> : <CircleAlert />}
-            <strong>{dropState === "valid" ? "drop to import chart" : "one ZIP file only"}</strong>
-            <span>{dropState === "valid" ? "release the archive to validate it" : "UNCHARTABLE imports one chart ZIP at a time"}</span>
+            <strong>{dropState === "valid" ? "drop to import charts" : "unsupported files"}</strong>
+            <span>{dropState === "valid" ? "ZIP, 7Z, and RAR archives are checked before installation" : "drop only ZIP, 7Z, or RAR chart archives"}</span>
           </div>
         </div>
       ) : null}
@@ -1818,11 +1839,10 @@ function ChartCard({
         {chart.rankedStatus === "ranked" ? <span className="ranked-tag">ranked</span> : null}
       </div>
       <div className="chart-copy">
-        <div>
-          <div className="chart-title-row">
-            <h2>{chart.title}</h2>
-            <span className={difficultyClass(chart.difficulty)}>{chart.difficultyLevel} {chart.difficulty}</span>
-          </div>
+          <div>
+            <div className="chart-title-row">
+              <h2>{chart.title}</h2>
+            </div>
           <p className="artist">{chart.artist}</p>
           <p className="charter">charted by <strong>{chart.submitter?.displayName || chart.charterName}</strong></p>
         </div>

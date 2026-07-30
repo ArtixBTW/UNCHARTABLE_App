@@ -8,7 +8,7 @@ import {
   difficultyClass,
   formatBytes,
   formatDuration,
-  isSingleZipDrop,
+  isArchiveDrop,
   parseInstallDeepLink,
   type Chart,
   type InstalledChart
@@ -89,15 +89,15 @@ describe("chart presentation helpers", () => {
     expect(parseInstallDeepLink("unchartable://install/not-a-chart")).toBeNull();
   });
 
-  it("accepts exactly one dropped ZIP archive", () => {
-    expect(isSingleZipDrop(["C:\\Downloads\\chart.ZIP"])).toBe(true);
-    expect(isSingleZipDrop(["C:\\Downloads\\song.name.with.dots.zip"])).toBe(true);
-    expect(isSingleZipDrop(["C:\\Downloads\\chart.rar"])).toBe(false);
-    expect(isSingleZipDrop(["C:\\Downloads\\chart.zip.exe"])).toBe(false);
-    expect(isSingleZipDrop(["C:\\Downloads\\chart.zip "] )).toBe(false);
-    expect(isSingleZipDrop(["first.zip", "second.zip"])).toBe(false);
-    expect(isSingleZipDrop(["chart.zip", "notes.txt"])).toBe(false);
-    expect(isSingleZipDrop([])).toBe(false);
+  it("accepts exactly one supported chart archive", () => {
+    expect(isArchiveDrop(["C:\\Downloads\\chart.ZIP"])).toBe(true);
+    expect(isArchiveDrop(["C:\\Downloads\\song.name.with.dots.7z"])).toBe(true);
+    expect(isArchiveDrop(["C:\\Downloads\\chart.rar"])).toBe(true);
+    expect(isArchiveDrop(["C:\\Downloads\\chart.zip.exe"])).toBe(false);
+    expect(isArchiveDrop(["C:\\Downloads\\chart.zip "] )).toBe(false);
+    expect(isArchiveDrop(["first.zip", "second.zip"])).toBe(true);
+    expect(isArchiveDrop(["chart.zip", "notes.txt"])).toBe(false);
+    expect(isArchiveDrop([])).toBe(false);
   });
 });
 

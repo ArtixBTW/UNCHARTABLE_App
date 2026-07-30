@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -154,6 +154,7 @@ struct DiagnosticReport {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportArchiveInspection {
+    archive_format: String,
     archive_path: String,
     archive_size_bytes: u64,
     artist: String,
@@ -161,6 +162,23 @@ struct ImportArchiveInspection {
     conflict_folder_name: Option<String>,
     conflict_path: Option<String>,
     title: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveFormat {
+    Zip,
+    SevenZip,
+    Rar,
+}
+
+impl ArchiveFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::SevenZip => "7z",
+            Self::Rar => "rar",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -665,6 +683,43 @@ fn contains_blocked_file(path: &Path) -> bool {
     )
 }
 
+fn is_nested_archive(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "zip" | "7z" | "rar"
+    )
+}
+
+fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
+    if path.as_os_str().is_empty()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("the archive contains an unsafe file path.".to_string());
+    }
+    Ok(path.to_path_buf())
+}
+
+fn extracted_source(staging_path: &Path) -> Result<PathBuf, String> {
+    let entries = fs::read_dir(staging_path)
+        .map_err(|error| format!("could not inspect extracted chart: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    if entries.len() == 1 && entries[0].path().is_dir() {
+        Ok(entries[0].path())
+    } else {
+        Ok(staging_path.to_path_buf())
+    }
+}
+
 fn extract_zip_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBuf, String> {
     let archive_file = fs::File::open(archive_path)
         .map_err(|error| format!("could not open the chart archive: {error}"))?;
@@ -682,14 +737,7 @@ fn extract_zip_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBu
         let relative_path = entry
             .enclosed_name()
             .ok_or_else(|| "the ZIP contains an unsafe file path.".to_string())?;
-        if relative_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
-            return Err("the ZIP contains an unsafe file path.".to_string());
-        }
+        let relative_path = safe_archive_path(&relative_path)?;
         if entry
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
@@ -699,6 +747,12 @@ fn extract_zip_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBu
         if contains_blocked_file(&relative_path) {
             return Err(format!(
                 "blocked executable file in archive: {}",
+                relative_path.display()
+            ));
+        }
+        if is_nested_archive(&relative_path) {
+            return Err(format!(
+                "nested archives are not installed into CustomSongs: {}",
                 relative_path.display()
             ));
         }
@@ -729,14 +783,174 @@ fn extract_zip_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBu
             .map_err(|error| format!("could not finish chart file: {error}"))?;
     }
 
-    let entries = fs::read_dir(staging_path)
-        .map_err(|error| format!("could not inspect extracted chart: {error}"))?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    if entries.len() == 1 && entries[0].path().is_dir() {
-        Ok(entries[0].path())
-    } else {
-        Ok(staging_path.to_path_buf())
+    extracted_source(staging_path)
+}
+
+fn sevenz_error(message: impl Into<String>) -> sevenz_rust::Error {
+    sevenz_rust::Error::io(io::Error::new(io::ErrorKind::InvalidData, message.into()))
+}
+
+fn extract_7z_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBuf, String> {
+    let mut file_count = 0usize;
+    let mut extracted_bytes = 0u64;
+    sevenz_rust::decompress_file_with_extract_fn(
+        archive_path,
+        staging_path,
+        |entry, reader, destination| {
+            file_count = file_count
+                .checked_add(1)
+                .ok_or_else(|| sevenz_error("the archive file count is invalid."))?;
+            if file_count > MAX_ARCHIVE_FILES {
+                return Err(sevenz_error("the chart archive contains too many files."));
+            }
+
+            let relative_path = safe_archive_path(Path::new(entry.name())).map_err(sevenz_error)?;
+            if contains_blocked_file(&relative_path) {
+                return Err(sevenz_error(format!(
+                    "blocked executable file in archive: {}",
+                    relative_path.display()
+                )));
+            }
+            if is_nested_archive(&relative_path) {
+                return Err(sevenz_error(format!(
+                    "nested archives are not installed into CustomSongs: {}",
+                    relative_path.display()
+                )));
+            }
+            extracted_bytes = extracted_bytes
+                .checked_add(entry.size())
+                .ok_or_else(|| sevenz_error("the extracted chart size is invalid."))?;
+            if extracted_bytes > MAX_EXTRACTED_BYTES {
+                return Err(sevenz_error(
+                    "the chart expands beyond the safe extraction limit.",
+                ));
+            }
+
+            let output_path = staging_path.join(&relative_path);
+            if output_path != *destination {
+                return Err(sevenz_error("the 7Z contains an unsafe file path."));
+            }
+            if entry.is_directory() {
+                fs::create_dir_all(&output_path).map_err(sevenz_rust::Error::io)?;
+                return Ok(true);
+            }
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent).map_err(sevenz_rust::Error::io)?;
+            }
+            let mut output = fs::File::create(&output_path).map_err(sevenz_rust::Error::io)?;
+            io::copy(reader, &mut output).map_err(sevenz_rust::Error::io)?;
+            output.flush().map_err(sevenz_rust::Error::io)?;
+            Ok(true)
+        },
+    )
+    .map_err(|error| format!("the downloaded file is not a valid 7Z archive: {error}"))?;
+    extracted_source(staging_path)
+}
+
+fn extract_rar_safely(archive_path: &Path, staging_path: &Path) -> Result<PathBuf, String> {
+    let mut archive = unrar::Archive::new(archive_path)
+        .open_for_processing()
+        .map_err(|error| format!("the downloaded file is not a valid RAR archive: {error}"))?;
+    let mut file_count = 0usize;
+    let mut extracted_bytes = 0u64;
+
+    while let Some(header) = archive
+        .read_header()
+        .map_err(|error| format!("could not read the RAR archive: {error}"))?
+    {
+        let entry = header.entry();
+        let relative_path = safe_archive_path(&entry.filename)?;
+        if entry.is_encrypted() {
+            return Err("password-protected RAR archives are not supported.".to_string());
+        }
+        if entry.is_split() {
+            return Err("multi-part RAR archives are not supported.".to_string());
+        }
+        if contains_blocked_file(&relative_path) {
+            return Err(format!(
+                "blocked executable file in archive: {}",
+                relative_path.display()
+            ));
+        }
+        if is_nested_archive(&relative_path) {
+            return Err(format!(
+                "nested archives are not installed into CustomSongs: {}",
+                relative_path.display()
+            ));
+        }
+        file_count = file_count
+            .checked_add(1)
+            .ok_or_else(|| "the archive file count is invalid.".to_string())?;
+        if file_count > MAX_ARCHIVE_FILES {
+            return Err("the chart archive contains too many files.".to_string());
+        }
+        extracted_bytes = extracted_bytes
+            .checked_add(entry.unpacked_size)
+            .ok_or_else(|| "the extracted chart size is invalid.".to_string())?;
+        if extracted_bytes > MAX_EXTRACTED_BYTES {
+            return Err("the chart expands beyond the safe extraction limit.".to_string());
+        }
+
+        let output_path = staging_path.join(&relative_path);
+        if entry.is_directory() {
+            fs::create_dir_all(&output_path)
+                .map_err(|error| format!("could not create chart directory: {error}"))?;
+            archive = header
+                .skip()
+                .map_err(|error| format!("could not read the RAR archive: {error}"))?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create chart directory: {error}"))?;
+        }
+        archive = header
+            .extract_to(&output_path)
+            .map_err(|error| format!("could not extract the RAR archive: {error}"))?;
+        let metadata = fs::symlink_metadata(&output_path)
+            .map_err(|error| format!("could not verify extracted chart file: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            let _ = fs::remove_file(&output_path);
+            return Err("symbolic links are not allowed in chart archives.".to_string());
+        }
+    }
+
+    extracted_source(staging_path)
+}
+
+fn detect_archive_format(archive_path: &Path) -> Result<ArchiveFormat, String> {
+    let mut file = fs::File::open(archive_path)
+        .map_err(|error| format!("could not open the chart archive: {error}"))?;
+    let mut signature = [0u8; 8];
+    let bytes_read = file
+        .read(&mut signature)
+        .map_err(|error| format!("could not inspect the chart archive: {error}"))?;
+    let signature = &signature[..bytes_read];
+    if signature.starts_with(b"PK\x03\x04")
+        || signature.starts_with(b"PK\x05\x06")
+        || signature.starts_with(b"PK\x07\x08")
+    {
+        return Ok(ArchiveFormat::Zip);
+    }
+    if signature.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        return Ok(ArchiveFormat::SevenZip);
+    }
+    if signature.starts_with(b"Rar!\x1A\x07\x00") || signature.starts_with(b"Rar!\x1A\x07\x01\x00")
+    {
+        return Ok(ArchiveFormat::Rar);
+    }
+    Err("unsupported archive. Use a ZIP, 7Z, or RAR chart archive.".to_string())
+}
+
+fn extract_archive_safely(
+    archive_path: &Path,
+    staging_path: &Path,
+    format: ArchiveFormat,
+) -> Result<PathBuf, String> {
+    match format {
+        ArchiveFormat::Zip => extract_zip_safely(archive_path, staging_path),
+        ArchiveFormat::SevenZip => extract_7z_safely(archive_path, staging_path),
+        ArchiveFormat::Rar => extract_rar_safely(archive_path, staging_path),
     }
 }
 
@@ -836,16 +1050,9 @@ fn finalize_install(
     Ok(())
 }
 
-fn validate_local_archive(archive_path: &Path) -> Result<u64, String> {
+fn validate_local_archive(archive_path: &Path) -> Result<(u64, ArchiveFormat), String> {
     if !archive_path.is_file() {
-        return Err("choose an existing chart ZIP.".to_string());
-    }
-    if !archive_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("zip"))
-    {
-        return Err("UNCHARTABLE imports ZIP archives only.".to_string());
+        return Err("choose an existing chart archive.".to_string());
     }
     let size = fs::metadata(archive_path)
         .map_err(|error| format!("could not inspect the archive: {error}"))?
@@ -853,7 +1060,7 @@ fn validate_local_archive(archive_path: &Path) -> Result<u64, String> {
     if size > MAX_ARCHIVE_BYTES {
         return Err("the chart archive exceeds the 250 MB limit.".to_string());
     }
-    Ok(size)
+    Ok((size, detect_archive_format(archive_path)?))
 }
 
 fn matching_local_chart(target: &Path, identity: &ManualChartIdentity) -> Option<PathBuf> {
@@ -893,11 +1100,11 @@ fn inspect_archive_for_import(
     target: &Path,
 ) -> Result<(ImportArchiveInspection, PathBuf, PathBuf), String> {
     validate_target_directory(target)?;
-    let archive_size_bytes = validate_local_archive(archive_path)?;
+    let (archive_size_bytes, archive_format) = validate_local_archive(archive_path)?;
     let staging = target.join(format!(".unchartable-import-{}", Uuid::new_v4().simple()));
     fs::create_dir_all(&staging)
         .map_err(|error| format!("could not create the import workspace: {error}"))?;
-    let source = match extract_zip_safely(archive_path, &staging) {
+    let source = match extract_archive_safely(archive_path, &staging, archive_format) {
         Ok(source) => source,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging);
@@ -908,9 +1115,9 @@ fn inspect_archive_for_import(
     if !inspection.has_chart || !inspection.has_audio {
         let _ = fs::remove_dir_all(&staging);
         return Err(match (inspection.has_chart, inspection.has_audio) {
-            (false, false) => "the ZIP contains neither chart .txt files nor supported audio.",
-            (false, true) => "the ZIP contains audio but no chart .txt file.",
-            (true, false) => "the ZIP contains chart data but no supported audio file.",
+            (false, false) => "the archive contains neither chart .txt files nor supported audio.",
+            (false, true) => "the archive contains audio but no chart .txt file.",
+            (true, false) => "the archive contains chart data but no supported audio file.",
             (true, true) => unreachable!(),
         }
         .to_string());
@@ -926,6 +1133,7 @@ fn inspect_archive_for_import(
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
     let result = ImportArchiveInspection {
+        archive_format: archive_format.label().to_string(),
         archive_path: archive_path.to_string_lossy().to_string(),
         archive_size_bytes,
         artist: inspection.identity.artist.clone(),
@@ -991,10 +1199,12 @@ fn is_repairable_temporary_item(name: &str) -> bool {
     if name.starts_with(".unchartable-import-") || name.starts_with(".unchartable-write-test-") {
         return true;
     }
-    let Some(operation_id) = name
-        .strip_prefix(".unchartable-")
-        .and_then(|value| value.strip_suffix(".zip").or(Some(value)))
-    else {
+    let Some(operation_id) = name.strip_prefix(".unchartable-").map(|value| {
+        value
+            .strip_suffix(".zip")
+            .or_else(|| value.strip_suffix(".archive"))
+            .unwrap_or(value)
+    }) else {
         return false;
     };
     Uuid::parse_str(operation_id).is_ok()
@@ -1890,6 +2100,27 @@ fn cancel_install(runtime: State<'_, InstallRuntime>, chart_id: String) -> Resul
     Ok(())
 }
 
+fn get_or_create_installation_id(app: &AppHandle) -> Result<String, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("could not locate app data: {error}"))?;
+    fs::create_dir_all(&app_data)
+        .map_err(|error| format!("could not prepare app data: {error}"))?;
+    let path = app_data.join("installation-id");
+    if let Ok(value) = fs::read_to_string(&path) {
+        let value = value.trim();
+        if Uuid::parse_str(value).is_ok() {
+            return Ok(value.to_string());
+        }
+    }
+
+    let installation_id = Uuid::new_v4().to_string();
+    fs::write(&path, &installation_id)
+        .map_err(|error| format!("could not save the app installation id: {error}"))?;
+    Ok(installation_id)
+}
+
 #[tauri::command]
 async fn install_chart(
     app: AppHandle,
@@ -1909,6 +2140,7 @@ async fn install_chart(
         .remove(&chart_id);
     let target = PathBuf::from(target_directory);
     validate_target_directory(&target)?;
+    let installation_id = get_or_create_installation_id(&app)?;
 
     app.emit(
         "install-progress",
@@ -1921,14 +2153,20 @@ async fn install_chart(
     )
     .map_err(|error| error.to_string())?;
 
-    let ticket_url = format!("{API_ORIGIN}/api/charts/{chart_id}/download?format=json");
+    let ticket_url = format!("{API_ORIGIN}/api/charts/{chart_id}/download?format=json&source=app");
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::limited(4))
+        .user_agent(format!(
+            "UNCHARTABLE-App/{} (+https://unchartable.site)",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
         .map_err(|error| format!("could not prepare secure download: {error}"))?;
     let ticket: DownloadTicket = client
         .get(ticket_url)
+        .header("x-unchartable-device-id", installation_id)
         .send()
         .await
         .map_err(|error| format!("could not request the chart download: {error}"))?
@@ -1958,24 +2196,13 @@ async fn install_chart(
         .map_err(|error| format!("chart download failed: {error}"))?
         .error_for_status()
         .map_err(|error| format!("chart download failed: {error}"))?;
-    let is_rar = response
-        .headers()
-        .get(reqwest::header::CONTENT_DISPOSITION)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.to_ascii_lowercase().contains(".rar"));
-    if is_rar {
-        return Err(
-            "This chart uses a RAR archive. UNCHARTABLE currently installs ZIP charts only."
-                .to_string(),
-        );
-    }
     let total_bytes = response.content_length();
     if total_bytes.is_some_and(|size| size > MAX_ARCHIVE_BYTES) {
         return Err("the chart archive exceeds the 250 MB download limit.".to_string());
     }
 
     let operation_id = Uuid::new_v4();
-    let archive_path = target.join(format!(".unchartable-{operation_id}.zip"));
+    let archive_path = target.join(format!(".unchartable-{operation_id}.archive"));
     let staging_path = target.join(format!(".unchartable-{operation_id}"));
     let mut archive_file = tokio::fs::File::create(&archive_path)
         .await
@@ -2044,9 +2271,16 @@ async fn install_chart(
 
     let archive_sha256 = format!("{:x}", hash.finalize());
     let existing = find_existing_install(&target, &chart_id);
+    let archive_format = match detect_archive_format(&archive_path) {
+        Ok(format) => format,
+        Err(error) => {
+            let _ = fs::remove_file(&archive_path);
+            return Err(error);
+        }
+    };
     fs::create_dir_all(&staging_path)
         .map_err(|error| format!("could not create the temporary install directory: {error}"))?;
-    let source_path = extract_zip_safely(&archive_path, &staging_path);
+    let source_path = extract_archive_safely(&archive_path, &staging_path, archive_format);
     let _ = fs::remove_file(&archive_path);
     let source_path = match source_path {
         Ok(path) => path,
@@ -2120,11 +2354,12 @@ async fn install_chart(
 #[cfg(test)]
 mod tests {
     use super::{
-        InstallMetadata, MAX_ARCHIVE_BYTES, app_state_for_path, backup_directory,
-        conflicting_install_folder_name, contains_blocked_file, empty_chart_trash,
-        export_local_pack, extract_zip_safely, finalize_install, generated_install_folder_name,
-        import_chart_archive, inspect_chart_archive, inspect_manual_chart_identity,
-        install_folder_name, is_repairable_temporary_item, list_chart_backups,
+        ArchiveFormat, InstallMetadata, MAX_ARCHIVE_BYTES, app_state_for_path, backup_directory,
+        conflicting_install_folder_name, contains_blocked_file, detect_archive_format,
+        empty_chart_trash, export_local_pack, extract_archive_safely, extract_zip_safely,
+        finalize_install, generated_install_folder_name, import_chart_archive,
+        inspect_chart_archive, inspect_chart_structure, inspect_manual_chart_identity,
+        install_folder_name, is_nested_archive, is_repairable_temporary_item, list_chart_backups,
         list_operation_history, list_trashed_charts, migrate_legacy_trash, new_install_path,
         parse_allowed_external_url, repair_library, restore_chart_backup, restore_trashed_chart,
         sanitize_folder_name, scan_installed, set_all_chart_updates, trash_installed_chart,
@@ -2191,17 +2426,21 @@ mod tests {
         assert!(contains_blocked_file(Path::new("chart/setup.exe")));
         assert!(contains_blocked_file(Path::new("chart/script.PS1")));
         assert!(!contains_blocked_file(Path::new("chart/song.wav")));
+        assert!(is_nested_archive(Path::new("chart/original.zip")));
+        assert!(is_nested_archive(Path::new("chart/original.7Z")));
+        assert!(is_nested_archive(Path::new("chart/original.rar")));
+        assert!(!is_nested_archive(Path::new("chart/song.wav")));
     }
 
     #[test]
-    fn accepts_only_zip_files_within_the_import_size_limit() {
+    fn detects_supported_archives_and_enforces_the_import_size_limit() {
         let temporary = tempdir().expect("temporary directory");
-        let wrong_extension = temporary.path().join("chart.rar");
-        std::fs::write(&wrong_extension, b"archive").expect("fake archive");
+        let wrong_contents = temporary.path().join("chart.rar");
+        std::fs::write(&wrong_contents, b"archive").expect("fake archive");
         assert!(
-            validate_local_archive(&wrong_extension)
-                .expect_err("RAR should be rejected")
-                .contains("ZIP archives only")
+            validate_local_archive(&wrong_contents)
+                .expect_err("invalid archive should be rejected")
+                .contains("unsupported archive")
         );
 
         let oversized = temporary.path().join("oversized.zip");
@@ -2211,9 +2450,47 @@ mod tests {
             .expect("sparse oversized fixture");
         assert!(
             validate_local_archive(&oversized)
-                .expect_err("oversized ZIP should be rejected")
+                .expect_err("oversized archive should be rejected")
                 .contains("250 MB")
         );
+
+        let zip_path = temporary.path().join("chart.data");
+        let zip_file = File::create(&zip_path).expect("zip file");
+        ZipWriter::new(zip_file).finish().expect("empty zip");
+        assert_eq!(
+            validate_local_archive(&zip_path).expect("ZIP signature").1,
+            ArchiveFormat::Zip
+        );
+
+        let seven_path = temporary.path().join("chart.7z");
+        std::fs::write(&seven_path, b"7z\xBC\xAF\x27\x1C\0\0").expect("7Z signature");
+        assert_eq!(
+            detect_archive_format(&seven_path).expect("7Z signature"),
+            ArchiveFormat::SevenZip
+        );
+
+        let rar_path = temporary.path().join("chart.rar");
+        std::fs::write(&rar_path, b"Rar!\x1A\x07\x01\x00").expect("RAR signature");
+        assert_eq!(
+            detect_archive_format(&rar_path).expect("RAR signature"),
+            ArchiveFormat::Rar
+        );
+    }
+
+    #[test]
+    #[ignore = "requires UNCHARTABLE_ARCHIVE_FIXTURE"]
+    fn extracts_a_real_supported_archive_fixture() {
+        let fixture = std::env::var("UNCHARTABLE_ARCHIVE_FIXTURE")
+            .expect("UNCHARTABLE_ARCHIVE_FIXTURE must point to an archive");
+        let temporary = tempdir().expect("temporary directory");
+        let staging = temporary.path().join("staging");
+        std::fs::create_dir_all(&staging).expect("staging directory");
+        let format = detect_archive_format(Path::new(&fixture)).expect("supported archive");
+        let source = extract_archive_safely(Path::new(&fixture), &staging, format)
+            .expect("safe archive extraction");
+        let (has_chart, has_audio) = inspect_chart_structure(&source);
+        assert!(has_chart, "fixture should contain chart TXT data");
+        assert!(has_audio, "fixture should contain supported audio");
     }
 
     #[test]
@@ -2223,6 +2500,9 @@ mod tests {
         ));
         assert!(is_repairable_temporary_item(
             ".unchartable-503c0c85-d4b6-4366-b18b-bbcc6fb44f63.zip"
+        ));
+        assert!(is_repairable_temporary_item(
+            ".unchartable-503c0c85-d4b6-4366-b18b-bbcc6fb44f63.archive"
         ));
         assert!(!is_repairable_temporary_item(".unchartable-history.json"));
         assert!(!is_repairable_temporary_item(".unchartable-backups"));
@@ -2717,6 +2997,21 @@ mod tests {
         let installed = PathBuf::from(installed);
         assert!(installed.join("chart.txt").is_file());
         assert!(installed.join("audio.wav").is_file());
+        assert_eq!(
+            installed.file_name().and_then(|name| name.to_str()),
+            Some("Manual Song")
+        );
+        assert!(
+            archive_path.is_file(),
+            "the original archive should remain at its source"
+        );
+        assert!(
+            std::fs::read_dir(&installed)
+                .expect("installed chart directory")
+                .filter_map(Result::ok)
+                .all(|entry| !is_nested_archive(&entry.path())),
+            "the installed chart should contain extracted files only"
+        );
 
         let conflict =
             inspect_chart_archive(archive_path.to_string_lossy().to_string(), target.clone())
@@ -2779,6 +3074,56 @@ mod tests {
         assert!(history.iter().any(|record| record.action == "import"));
         assert!(history.iter().any(|record| record.action == "export"));
         assert!(history.iter().any(|record| record.action == "repair"));
+    }
+
+    #[test]
+    fn imports_rootless_archive_into_a_folder_named_from_chart_metadata() {
+        let temporary = tempdir().expect("temporary directory");
+        let custom_songs = temporary.path().join("CustomSongs");
+        std::fs::create_dir_all(&custom_songs).expect("CustomSongs");
+        let archive_path = temporary.path().join("rootless.zip");
+        let archive_file = File::create(&archive_path).expect("archive file");
+        let mut archive = ZipWriter::new(archive_file);
+        archive
+            .start_file("chart.txt", SimpleFileOptions::default())
+            .expect("chart entry");
+        archive
+            .write_all(
+                b"[Metadata]\nTitle:Rootless Song\nArtist:Manual Artist\nCreator:Alice\nTags:{\"SongLength\":120}",
+            )
+            .expect("chart contents");
+        archive
+            .start_file("audio.wav", SimpleFileOptions::default())
+            .expect("audio entry");
+        archive.write_all(b"audio").expect("audio contents");
+        archive.finish().expect("finish archive");
+
+        let installed = PathBuf::from(
+            import_chart_archive(
+                archive_path.to_string_lossy().to_string(),
+                custom_songs.to_string_lossy().to_string(),
+                false,
+            )
+            .expect("import rootless chart"),
+        );
+
+        assert_eq!(
+            installed.file_name().and_then(|name| name.to_str()),
+            Some("Rootless Song")
+        );
+        assert!(installed.join("chart.txt").is_file());
+        assert!(installed.join("audio.wav").is_file());
+        assert!(
+            archive_path.is_file(),
+            "the original archive should remain at its source"
+        );
+        assert!(
+            std::fs::read_dir(&installed)
+                .expect("installed chart directory")
+                .filter_map(Result::ok)
+                .all(|entry| !is_nested_archive(&entry.path())),
+            "the installed chart should contain extracted files only"
+        );
     }
 }
 

@@ -566,16 +566,24 @@ h1 {
 }
 
 .artist {
+  display: -webkit-box;
+  overflow: hidden;
   margin-bottom: 2px;
   color: var(--ink);
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .charter {
+  overflow: hidden;
   margin-bottom: 10px;
   color: var(--muted);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .charter strong {
@@ -726,7 +734,7 @@ h1 {
   display: grid;
   min-height: 0;
   align-content: center;
-  margin: auto 0 4px;
+  margin: 0 0 4px;
 }
 
 .card-status-slot:empty {
@@ -985,7 +993,6 @@ h1 {
 }
 
 .library-toolbar,
-.library-filters,
 .batch-actions {
   display: flex;
   align-items: center;
@@ -998,11 +1005,6 @@ h1 {
   margin-bottom: 10px;
 }
 
-.library-filters {
-  flex-wrap: wrap;
-}
-
-.library-filter,
 .batch-actions button,
 .load-more-button {
   display: inline-flex;
@@ -1017,20 +1019,12 @@ h1 {
   font-weight: 900;
 }
 
-.library-filter svg,
 .batch-actions svg {
   width: 13px;
 }
 
-.library-filter-active {
-  border-color: var(--punch);
-  background: color-mix(in srgb, var(--punch) 12%, transparent);
-  color: var(--punch);
-}
-
 .batch-actions {
-  padding-left: 10px;
-  border-left: 1px solid var(--line);
+  margin-left: auto;
 }
 
 .batch-actions span {
@@ -1798,13 +1792,160 @@ h1 {
 .import-review,
 .repair-report {
   display: grid;
-  gap: 12px;
-  margin: 14px 0;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin: 14px 0 18px;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--accent);
+  border-top: 3px solid var(--punch);
+  border-radius: 6px;
+  background: var(--surface-panel);
+  padding: 16px 18px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.import-review-conflict {
+  border-top-color: var(--warning-line);
+}
+
+.import-review-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--punch) 38%, var(--line));
   border-radius: 5px;
-  background: var(--paper);
-  padding: 14px 16px;
+  background: color-mix(in srgb, var(--punch) 9%, var(--surface-soft));
+  color: var(--punch);
+}
+
+.import-review-icon svg {
+  width: 23px;
+  height: 23px;
+}
+
+.import-review-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.import-review-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-review-heading .kicker {
+  margin: 0;
+}
+
+.import-review-copy h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-family: "Unchartable Mono", monospace;
+  font-size: clamp(18px, 2.2vw, 25px);
+  font-weight: 900;
+  line-height: 1.08;
+}
+
+.import-review-list {
+  display: grid;
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  scrollbar-color: var(--punch) transparent;
+}
+
+.import-review-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-review-item:last-child {
+  border-bottom: 0;
+}
+
+.import-review-item > svg {
+  width: 17px;
+  height: 17px;
+  color: var(--sidebar-ready);
+}
+
+.import-review-item-conflict > svg {
+  color: var(--warning-line);
+}
+
+.import-review-item h2 {
+  font-size: 17px;
+}
+
+.import-review-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.import-review-meta span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.import-review-meta span:not(:last-child)::after {
+  width: 3px;
+  height: 3px;
+  margin: 0 8px;
+  border-radius: 50%;
+  background: var(--punch);
+  content: "";
+}
+
+.archive-format {
+  border: 1px solid color-mix(in srgb, var(--punch) 42%, var(--line));
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--punch);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.import-ready,
+.import-conflict {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.import-ready {
+  color: var(--sidebar-ready);
+}
+
+.import-conflict {
+  color: var(--warning-ink);
+}
+
+.import-ready svg,
+.import-conflict svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
 }
 
 .drop-overlay {
@@ -1882,6 +2023,65 @@ h1 {
   gap: 8px;
 }
 
+.import-review-actions {
+  align-self: stretch;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.import-review-actions button {
+  width: 100%;
+  min-width: 118px;
+  display: inline-flex;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 5px;
+  padding: 0 13px;
+  font-size: 10px;
+  font-weight: 900;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.import-review-actions button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.import-confirm-button {
+  border: 1px solid var(--punch);
+  background: var(--punch);
+  color: var(--cream);
+}
+
+.import-confirm-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--punch) 86%, var(--night));
+  transform: translateY(-1px);
+}
+
+.import-confirm-button:active:not(:disabled),
+.import-cancel-button:active {
+  transform: translateY(1px);
+}
+
+.import-confirm-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.import-cancel-button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+
+.import-cancel-button:hover {
+  border-color: var(--punch);
+  color: var(--punch);
+}
+
 .import-review .status-ok,
 .repair-report .status-ok {
   color: #4b9b39;
@@ -1890,6 +2090,30 @@ h1 {
 .import-review .status-warning,
 .repair-report .status-warning {
   color: var(--accent);
+}
+
+@media (max-width: 760px) {
+  .import-review,
+  .repair-report {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .import-review-icon {
+    width: 42px;
+    height: 42px;
+  }
+
+  .import-review-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: stretch;
+  }
+
+  .import-review-actions button {
+    flex: 1 1 auto;
+  }
 }
 
 .local-pack-list {
