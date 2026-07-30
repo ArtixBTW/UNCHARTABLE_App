@@ -39,7 +39,8 @@ jobs:
           @"
           ## What's new
 
-          - Drag and drop a chart ZIP anywhere in the app to validate and import it.
+          - Import one or more ZIP, 7Z, or RAR charts from the file picker or by dragging them into the app.
+          - Review every selected archive before installing it into CustomSongs.
           - Browse chart packs and install their charts through a guided selection.
           - Search the installed library by title, artist, charter, or folder.
           - Recognize compatible charts that were installed manually and link them to UNCHARTABLE.
@@ -47,13 +48,11 @@ jobs:
           - Keep downloads in a persistent queue with progress, retry, and cancellation controls.
           - Restore deleted charts from trash and empty the trash when it is no longer needed.
           - Roll back chart updates using automatically retained backups.
-          - Repair incomplete temporary installs and review compact library diagnostics.
-          - Create and export local chart packs.
           - Keep UNCHARTABLE available from the system tray with low background activity.
 
           ## Import safety
 
-          Imported archives are validated before extraction. UNCHARTABLE rejects unsupported formats, unsafe paths, executable payloads, incomplete charts, and archives larger than 250 MB.
+          Imported archives are validated before extraction. UNCHARTABLE rejects unsafe paths, executable payloads, nested archives, incomplete charts, and archives larger than 250 MB.
 
           ## Verification
 
