@@ -237,17 +237,41 @@ fn default_updates_enabled() -> bool {
 }
 
 fn default_custom_songs_path() -> PathBuf {
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let local = PathBuf::from(local_app_data);
-        if let Some(app_data) = local.parent() {
-            return app_data
-                .join("LocalLow")
-                .join("D-CELL GAMES")
-                .join("UNBEATABLE")
-                .join("CustomSongs");
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local_app_data);
+            if let Some(app_data) = local.parent() {
+                return app_data
+                    .join("LocalLow")
+                    .join("D-CELL GAMES")
+                    .join("UNBEATABLE")
+                    .join("CustomSongs");
+            }
         }
+        PathBuf::from(r"C:\Users\Public\D-CELL GAMES\UNBEATABLE\CustomSongs")
     }
-    PathBuf::from(r"C:\Users\Public\D-CELL GAMES\UNBEATABLE\CustomSongs")
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        app_handle()
+            .path()
+            .local_data_dir()
+            .unwrap()
+            .join("Steam")
+            .join("steamapps")
+            .join("compatdata")
+            .join("2240620")
+            .join("pfx")
+            .join("drive_c")
+            .join("users")
+            .join("steamuser")
+            .join("AppData")
+            .join("LocalLow")
+            .join("D-CELL GAMES")
+            .join("UNBEATABLE")
+            .join("CustomSongs")
+    }
 }
 
 fn validate_chart_id(chart_id: &str) -> Result<(), String> {
