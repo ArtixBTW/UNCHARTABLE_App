@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WindowEvent,
@@ -17,6 +17,8 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 use zip::ZipArchive;
+
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 const API_ORIGIN: &str = "https://unchartable.site";
 const MAX_ARCHIVE_BYTES: u64 = 250 * 1024 * 1024;
@@ -471,6 +473,18 @@ fn scan_installed(target: &Path) -> Result<Vec<InstalledChart>, String> {
     Ok(charts)
 }
 
+fn app_handle<'a>() -> &'a AppHandle {
+    APP_HANDLE.get().unwrap()
+}
+
+fn local_data_dir() -> PathBuf {
+    app_handle()
+        .path()
+        .local_data_dir()
+        .unwrap_or_else(|_| PathBuf::from(std::env::temp_dir()))
+        .join("UNCHARTABLE")
+}
+
 fn trash_directory(_target: &Path) -> PathBuf {
     #[cfg(test)]
     {
@@ -479,11 +493,7 @@ fn trash_directory(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("Trash")
+        local_data_dir().join("Trash")
     }
 }
 
@@ -495,11 +505,7 @@ fn backup_directory(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("Backups")
+        local_data_dir().join("Backups")
     }
 }
 
@@ -511,11 +517,7 @@ fn history_path(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("history.json")
+        local_data_dir().join("history.json")
     }
 }
 
@@ -3146,6 +3148,9 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register_all()?;
             }
+
+            let _ = APP_HANDLE.set(app.app_handle().to_owned());
+
             let show = MenuItem::with_id(app, "show", "Open UNCHARTABLE", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
