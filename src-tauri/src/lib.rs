@@ -13,6 +13,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
@@ -1356,42 +1357,33 @@ fn validate_custom_songs_path(path: String) -> Result<AppState, String> {
 
 #[tauri::command]
 fn open_custom_songs_folder(path: String) -> Result<(), String> {
-    let target = PathBuf::from(path);
+    let target = PathBuf::from(&path);
     validate_target_directory(&target)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(&target)
-            .spawn()
-            .map_err(|error| format!("could not launch Windows Explorer: {error}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = target;
-        Err("opening the game folder is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not open the custom songs directory: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let parsed = parse_allowed_external_url(&url)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(parsed.as_str())
-            .spawn()
-            .map_err(|error| format!("could not open the UNCHARTABLE website: {error}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("opening website links is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path(parsed, None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not open the UNCHARTABLE website: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
@@ -1960,18 +1952,15 @@ async fn check_installed_updates(path: String) -> Result<Vec<UpdateCandidate>, S
 
 #[tauri::command]
 fn launch_unbeatable() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg("steam://run/2240620")
-            .spawn()
-            .map_err(|error| format!("could not ask Steam to launch UNBEATABLE: {error}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("launching UNBEATABLE is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path("steam://run/2240620", None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not ask Steam to launch UNBEATABLE: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
@@ -3132,6 +3121,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(InstallRuntime::default())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
