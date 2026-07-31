@@ -2,7 +2,7 @@
 
 A chart manager for **UNBEATABLE**.
 
-UNCHARTABLE is a lightweight Windows app for discovering, previewing, installing,
+UNCHARTABLE is a lightweight Windows/Linux app for discovering, previewing, installing,
 updating, and managing community charts from
 [unchartable.site](https://unchartable.site).
 
@@ -19,7 +19,7 @@ updating, and managing community charts from
 - Lets players restore or permanently remove charts from the app's local trash.
 - Opens UNBEATABLE directly through Steam.
 
-UNCHARTABLE is portable, account-free, and focused on Windows. It does not run a
+UNCHARTABLE is portable, account-free, and primarily focused on Windows. It does not run a
 background service or require administrator access.
 
 ## Safety
@@ -48,7 +48,7 @@ the contents of the player's `CustomSongs` directory.
 ## Project
 
 UNCHARTABLE uses React and TypeScript for the interface and Rust with Tauri for
-the native Windows layer.
+the native operating system layer.
 
 ```text
 src/                  desktop interface
