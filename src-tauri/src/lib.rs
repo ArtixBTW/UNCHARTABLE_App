@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::Mutex,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WindowEvent,
@@ -18,8 +18,6 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 use zip::ZipArchive;
-
-static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 const API_ORIGIN: &str = "https://unchartable.site";
 const MAX_ARCHIVE_BYTES: u64 = 250 * 1024 * 1024;
@@ -236,6 +234,46 @@ fn default_updates_enabled() -> bool {
     true
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn proton_custom_songs_path(steam_root: &Path) -> PathBuf {
+    steam_root
+        .join("steamapps")
+        .join("compatdata")
+        .join("2240620")
+        .join("pfx")
+        .join("drive_c")
+        .join("users")
+        .join("steamuser")
+        .join("AppData")
+        .join("LocalLow")
+        .join("D-CELL GAMES")
+        .join("UNBEATABLE")
+        .join("CustomSongs")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_custom_songs_candidates(home: &Path, xdg_data_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut steam_roots = Vec::new();
+    if let Some(xdg_data_home) = xdg_data_home {
+        steam_roots.push(xdg_data_home.join("Steam"));
+    }
+    steam_roots.extend([
+        home.join(".local").join("share").join("Steam"),
+        home.join(".steam").join("steam"),
+        home.join(".var")
+            .join("app")
+            .join("com.valvesoftware.Steam")
+            .join(".local")
+            .join("share")
+            .join("Steam"),
+    ]);
+    steam_roots.dedup();
+    steam_roots
+        .into_iter()
+        .map(|root| proton_custom_songs_path(&root))
+        .collect()
+}
+
 fn default_custom_songs_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -252,24 +290,27 @@ fn default_custom_songs_path() -> PathBuf {
         PathBuf::from(r"C:\Users\Public\D-CELL GAMES\UNBEATABLE\CustomSongs")
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        app_handle()
-            .path()
-            .local_data_dir()
-            .unwrap()
-            .join("Steam")
-            .join("steamapps")
-            .join("compatdata")
-            .join("2240620")
-            .join("pfx")
-            .join("drive_c")
-            .join("users")
-            .join("steamuser")
-            .join("AppData")
-            .join("LocalLow")
-            .join("D-CELL GAMES")
-            .join("UNBEATABLE")
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let xdg_data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+        let candidates = linux_custom_songs_candidates(&home, xdg_data_home.as_deref());
+        candidates
+            .iter()
+            .find(|candidate| candidate.exists())
+            .cloned()
+            .or_else(|| candidates.into_iter().next())
+            .unwrap_or_else(|| home.join("UNCHARTABLE").join("CustomSongs"))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("UNCHARTABLE")
             .join("CustomSongs")
     }
 }
@@ -498,16 +539,24 @@ fn scan_installed(target: &Path) -> Result<Vec<InstalledChart>, String> {
     Ok(charts)
 }
 
-fn app_handle<'a>() -> &'a AppHandle {
-    APP_HANDLE.get().unwrap()
-}
-
+#[cfg(not(test))]
 fn local_data_dir() -> PathBuf {
-    app_handle()
-        .path()
-        .local_data_dir()
-        .unwrap_or_else(|_| PathBuf::from(std::env::temp_dir()))
-        .join("UNCHARTABLE")
+    #[cfg(target_os = "windows")]
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    #[cfg(not(target_os = "windows"))]
+    let root = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local").join("share"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+
+    root.join("UNCHARTABLE")
 }
 
 fn trash_directory(_target: &Path) -> PathBuf {
@@ -1380,12 +1429,11 @@ fn validate_custom_songs_path(path: String) -> Result<AppState, String> {
 }
 
 #[tauri::command]
-fn open_custom_songs_folder(path: String) -> Result<(), String> {
+fn open_custom_songs_folder(app: AppHandle, path: String) -> Result<(), String> {
     let target = PathBuf::from(&path);
     validate_target_directory(&target)?;
 
-    app_handle()
-        .opener()
+    app.opener()
         .open_path(&path, None::<&str>)
         .map_err(|error| {
             format!(
@@ -1396,12 +1444,11 @@ fn open_custom_songs_folder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = parse_allowed_external_url(&url)?;
 
-    app_handle()
-        .opener()
-        .open_path(parsed, None::<&str>)
+    app.opener()
+        .open_url(parsed.as_str(), None::<&str>)
         .map_err(|error| {
             format!(
                 "could not open the UNCHARTABLE website: {}",
@@ -1975,10 +2022,9 @@ async fn check_installed_updates(path: String) -> Result<Vec<UpdateCandidate>, S
 }
 
 #[tauri::command]
-fn launch_unbeatable() -> Result<(), String> {
-    app_handle()
-        .opener()
-        .open_path("steam://run/2240620", None::<&str>)
+fn launch_unbeatable(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("steam://run/2240620", None::<&str>)
         .map_err(|error| {
             format!(
                 "could not ask Steam to launch UNBEATABLE: {}",
@@ -2374,9 +2420,10 @@ mod tests {
         empty_chart_trash, export_local_pack, extract_archive_safely, extract_zip_safely,
         finalize_install, generated_install_folder_name, import_chart_archive,
         inspect_chart_archive, inspect_chart_structure, inspect_manual_chart_identity,
-        install_folder_name, is_nested_archive, is_repairable_temporary_item, list_chart_backups,
-        list_operation_history, list_trashed_charts, migrate_legacy_trash, new_install_path,
-        parse_allowed_external_url, repair_library, restore_chart_backup, restore_trashed_chart,
+        install_folder_name, is_nested_archive, is_repairable_temporary_item,
+        linux_custom_songs_candidates, list_chart_backups, list_operation_history,
+        list_trashed_charts, migrate_legacy_trash, new_install_path, parse_allowed_external_url,
+        proton_custom_songs_path, repair_library, restore_chart_backup, restore_trashed_chart,
         sanitize_folder_name, scan_installed, set_all_chart_updates, trash_installed_chart,
         unique_manual_match, validate_local_archive,
     };
@@ -2396,6 +2443,32 @@ mod tests {
         assert_eq!(
             conflicting_install_folder_name("Same Song", "alice"),
             "Same Song by alice"
+        );
+    }
+
+    #[test]
+    fn builds_the_proton_custom_songs_path() {
+        let steam_root = Path::new("/home/player/.local/share/Steam");
+        assert_eq!(
+            proton_custom_songs_path(steam_root),
+            PathBuf::from(
+                "/home/player/.local/share/Steam/steamapps/compatdata/2240620/pfx/drive_c/users/steamuser/AppData/LocalLow/D-CELL GAMES/UNBEATABLE/CustomSongs"
+            )
+        );
+    }
+
+    #[test]
+    fn discovers_common_linux_steam_locations_without_duplicates() {
+        let home = Path::new("/home/player");
+        let xdg = Path::new("/home/player/.local/share");
+        let candidates = linux_custom_songs_candidates(home, Some(xdg));
+
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates[0].starts_with(xdg.join("Steam")));
+        assert!(candidates[1].starts_with(home.join(".steam/steam")));
+        assert!(
+            candidates[2]
+                .starts_with(home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"))
         );
     }
 
@@ -3162,8 +3235,6 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register_all()?;
             }
-
-            let _ = APP_HANDLE.set(app.app_handle().to_owned());
 
             let show = MenuItem::with_id(app, "show", "Open UNCHARTABLE", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

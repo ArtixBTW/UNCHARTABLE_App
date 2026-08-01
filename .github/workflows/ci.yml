@@ -10,9 +10,18 @@ env:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev patchelf wget
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -25,6 +34,7 @@ jobs:
       - name: Frontend build
         run: npm run build
       - name: Rust format
+        if: runner.os == 'Windows'
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

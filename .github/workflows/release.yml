@@ -10,8 +10,6 @@ env:
 
 jobs:
   windows:
-    permissions:
-      contents: write
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -31,14 +29,69 @@ jobs:
       - name: Package portable release
         shell: pwsh
         run: ./scripts/package-portable.ps1 -Version "${{ github.ref_name }}".TrimStart("v")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: output/release/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev libfuse2 libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev patchelf wget
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Test frontend
+        run: npm run test
+      - name: Test native app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build Linux bundles
+        run: npm run tauri -- build --bundles appimage,deb
+      - name: Package Linux release
+        run: |
+          mkdir -p output/release
+          find src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' \) -exec cp {} output/release/ \;
+          cd output/release
+          sha256sum *.AppImage *.deb > UNCHARTABLE-linux.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: output/release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-portable'
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+          path: release
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: pwsh
+        shell: bash
         run: |
-          @"
+          cat > release-notes.md <<'EOF'
           ## What's new
 
+          - Run UNCHARTABLE on Windows or Linux.
           - Import one or more ZIP, 7Z, or RAR charts from the file picker or by dragging them into the app.
           - Review every selected archive before installing it into CustomSongs.
           - Browse chart packs and install their charts through a guided selection.
@@ -56,11 +109,10 @@ jobs:
 
           ## Verification
 
-          This release includes a SHA-256 checksum for the portable executable.
-          "@ | Set-Content -Encoding utf8 release-notes.md
+          This release includes SHA-256 checksums for its downloadable builds.
+          EOF
 
-          gh release create "${{ github.ref_name }}" `
-            --title "UNCHARTABLE ${{ github.ref_name }}" `
-            --notes-file release-notes.md `
-            output/release/*.exe `
-            output/release/*.sha256
+          gh release create "${{ github.ref_name }}" \
+            --title "UNCHARTABLE ${{ github.ref_name }}" \
+            --notes-file release-notes.md \
+            release/*

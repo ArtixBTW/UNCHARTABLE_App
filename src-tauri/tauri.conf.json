@@ -33,7 +33,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
+    "targets": "all",
     "publisher": "UNCHARTABLE",
     "category": "MusicGame",
     "copyright": "Copyright (c) 2026 UNCHARTABLE contributors",
