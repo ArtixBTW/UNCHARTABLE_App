@@ -6,17 +6,20 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 use zip::ZipArchive;
+
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 const API_ORIGIN: &str = "https://unchartable.site";
 const MAX_ARCHIVE_BYTES: u64 = 250 * 1024 * 1024;
@@ -234,17 +237,41 @@ fn default_updates_enabled() -> bool {
 }
 
 fn default_custom_songs_path() -> PathBuf {
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let local = PathBuf::from(local_app_data);
-        if let Some(app_data) = local.parent() {
-            return app_data
-                .join("LocalLow")
-                .join("D-CELL GAMES")
-                .join("UNBEATABLE")
-                .join("CustomSongs");
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local_app_data);
+            if let Some(app_data) = local.parent() {
+                return app_data
+                    .join("LocalLow")
+                    .join("D-CELL GAMES")
+                    .join("UNBEATABLE")
+                    .join("CustomSongs");
+            }
         }
+        PathBuf::from(r"C:\Users\Public\D-CELL GAMES\UNBEATABLE\CustomSongs")
     }
-    PathBuf::from(r"C:\Users\Public\D-CELL GAMES\UNBEATABLE\CustomSongs")
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        app_handle()
+            .path()
+            .local_data_dir()
+            .unwrap()
+            .join("Steam")
+            .join("steamapps")
+            .join("compatdata")
+            .join("2240620")
+            .join("pfx")
+            .join("drive_c")
+            .join("users")
+            .join("steamuser")
+            .join("AppData")
+            .join("LocalLow")
+            .join("D-CELL GAMES")
+            .join("UNBEATABLE")
+            .join("CustomSongs")
+    }
 }
 
 fn validate_chart_id(chart_id: &str) -> Result<(), String> {
@@ -471,6 +498,18 @@ fn scan_installed(target: &Path) -> Result<Vec<InstalledChart>, String> {
     Ok(charts)
 }
 
+fn app_handle<'a>() -> &'a AppHandle {
+    APP_HANDLE.get().unwrap()
+}
+
+fn local_data_dir() -> PathBuf {
+    app_handle()
+        .path()
+        .local_data_dir()
+        .unwrap_or_else(|_| PathBuf::from(std::env::temp_dir()))
+        .join("UNCHARTABLE")
+}
+
 fn trash_directory(_target: &Path) -> PathBuf {
     #[cfg(test)]
     {
@@ -479,11 +518,7 @@ fn trash_directory(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("Trash")
+        local_data_dir().join("Trash")
     }
 }
 
@@ -495,11 +530,7 @@ fn backup_directory(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("Backups")
+        local_data_dir().join("Backups")
     }
 }
 
@@ -511,11 +542,7 @@ fn history_path(_target: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("UNCHARTABLE")
-            .join("history.json")
+        local_data_dir().join("history.json")
     }
 }
 
@@ -1354,42 +1381,33 @@ fn validate_custom_songs_path(path: String) -> Result<AppState, String> {
 
 #[tauri::command]
 fn open_custom_songs_folder(path: String) -> Result<(), String> {
-    let target = PathBuf::from(path);
+    let target = PathBuf::from(&path);
     validate_target_directory(&target)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(&target)
-            .spawn()
-            .map_err(|error| format!("could not launch Windows Explorer: {error}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = target;
-        Err("opening the game folder is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not open the custom songs directory: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let parsed = parse_allowed_external_url(&url)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(parsed.as_str())
-            .spawn()
-            .map_err(|error| format!("could not open the UNCHARTABLE website: {error}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("opening website links is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path(parsed, None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not open the UNCHARTABLE website: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
@@ -1958,18 +1976,15 @@ async fn check_installed_updates(path: String) -> Result<Vec<UpdateCandidate>, S
 
 #[tauri::command]
 fn launch_unbeatable() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg("steam://run/2240620")
-            .spawn()
-            .map_err(|error| format!("could not ask Steam to launch UNBEATABLE: {error}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("launching UNBEATABLE is currently supported on Windows only.".to_string())
-    }
+    app_handle()
+        .opener()
+        .open_path("steam://run/2240620", None::<&str>)
+        .map_err(|error| {
+            format!(
+                "could not ask Steam to launch UNBEATABLE: {}",
+                error.to_string()
+            )
+        })
 }
 
 #[tauri::command]
@@ -3130,6 +3145,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(InstallRuntime::default())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
@@ -3146,6 +3162,9 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register_all()?;
             }
+
+            let _ = APP_HANDLE.set(app.app_handle().to_owned());
+
             let show = MenuItem::with_id(app, "show", "Open UNCHARTABLE", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
