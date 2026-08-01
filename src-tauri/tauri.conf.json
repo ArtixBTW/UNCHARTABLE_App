@@ -33,8 +33,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
+    "targets": "all",
     "publisher": "UNCHARTABLE",
+    "category": "MusicGame",
     "copyright": "Copyright (c) 2026 UNCHARTABLE contributors",
     "shortDescription": "Browse and install UNBEATABLE community charts.",
     "longDescription": "The official UNCHARTABLE desktop companion for browsing and safely installing community charts for UNBEATABLE.",
@@ -48,6 +49,14 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
+      }
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "template.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "template.desktop"
       }
     }
   }
