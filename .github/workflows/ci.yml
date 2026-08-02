@@ -38,3 +38,6 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build native Linux app
+        if: runner.os == 'Linux'
+        run: npm run tauri -- build --debug --no-bundle

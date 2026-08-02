@@ -92,6 +92,8 @@ jobs:
           ## What's new
 
           - Run UNCHARTABLE on Windows or Linux.
+          - Find UNBEATABLE in the standard Steam, Flatpak Steam, or an additional Steam library on Linux.
+          - Report app bugs from settings with the version and operating system already included.
           - Import one or more ZIP, 7Z, or RAR charts from the file picker or by dragging them into the app.
           - Review every selected archive before installing it into CustomSongs.
           - Browse chart packs and install their charts through a guided selection.

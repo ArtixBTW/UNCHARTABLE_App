@@ -268,9 +268,36 @@ fn linux_custom_songs_candidates(home: &Path, xdg_data_home: Option<&Path>) -> V
             .join("Steam"),
     ]);
     steam_roots.dedup();
+    let additional_roots = steam_roots
+        .iter()
+        .flat_map(|root| steam_library_roots(root))
+        .collect::<Vec<_>>();
+    steam_roots.extend(additional_roots);
+    let mut seen = HashSet::new();
+    steam_roots.retain(|root| seen.insert(root.clone()));
     steam_roots
         .into_iter()
         .map(|root| proton_custom_songs_path(&root))
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn steam_library_roots(steam_root: &Path) -> Vec<PathBuf> {
+    let Ok(contents) = fs::read_to_string(steam_root.join("steamapps").join("libraryfolders.vdf"))
+    else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('"');
+            fields.next()?;
+            let key = fields.next()?;
+            fields.next()?;
+            let value = fields.next()?;
+            key.eq_ignore_ascii_case("path")
+                .then(|| PathBuf::from(value.replace("\\\\", "\\")))
+        })
         .collect()
 }
 
@@ -335,8 +362,11 @@ fn validate_target_directory(path: &Path) -> Result<(), String> {
 
 fn parse_allowed_external_url(url: &str) -> Result<Url, String> {
     let parsed = Url::parse(url).map_err(|_| "invalid UNCHARTABLE URL.".to_string())?;
-    if parsed.scheme() != "https" || parsed.host_str() != Some("unchartable.site") {
-        return Err("only unchartable.site links can be opened by the app.".to_string());
+    let is_site = parsed.host_str() == Some("unchartable.site");
+    let is_bug_report = parsed.host_str() == Some("github.com")
+        && parsed.path() == "/ddecry/UNCHARTABLE_App/issues/new";
+    if parsed.scheme() != "https" || (!is_site && !is_bug_report) {
+        return Err("this external link is not allowed by UNCHARTABLE.".to_string());
     }
     Ok(parsed)
 }
@@ -2473,6 +2503,32 @@ mod tests {
     }
 
     #[test]
+    fn discovers_custom_linux_steam_libraries() {
+        let temporary = tempdir().expect("temporary directory");
+        let home = temporary.path().join("home");
+        let steam = home.join(".local/share/Steam");
+        std::fs::create_dir_all(steam.join("steamapps")).expect("Steam directory");
+        std::fs::write(
+            steam.join("steamapps/libraryfolders.vdf"),
+            r#""libraryfolders"
+{
+  "1"
+  {
+    "path" "/mnt/games/SteamLibrary"
+  }
+}"#,
+        )
+        .expect("library folders fixture");
+
+        let candidates = linux_custom_songs_candidates(&home, Some(&home.join(".local/share")));
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.starts_with("/mnt/games/SteamLibrary"))
+        );
+    }
+
+    #[test]
     fn preserves_an_archive_root_folder_name() {
         let staging = Path::new(r"C:\temp\staging");
         let source = staging.join("Creator Folder");
@@ -2600,6 +2656,18 @@ mod tests {
     #[test]
     fn opens_only_secure_unchartable_links() {
         assert!(parse_allowed_external_url("https://unchartable.site/charts/example").is_ok());
+        assert!(
+            parse_allowed_external_url(
+                "https://github.com/ddecry/UNCHARTABLE_App/issues/new?labels=bug"
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_allowed_external_url("https://github.com/ddecry/UNCHARTABLE_App/issues").is_err()
+        );
+        assert!(
+            parse_allowed_external_url("https://github.com/another/repository/issues/new").is_err()
+        );
         assert!(parse_allowed_external_url("http://unchartable.site/charts/example").is_err());
         assert!(
             parse_allowed_external_url("https://unchartable.site.example/charts/example").is_err()

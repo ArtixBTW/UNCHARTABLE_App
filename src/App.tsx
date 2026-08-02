@@ -5,6 +5,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Archive,
+  Bug,
   Check,
   CheckSquare,
   ChevronLeft,
@@ -43,8 +44,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import "./App.css";
+import appPackage from "../package.json";
 import {
   API_ORIGIN,
+  buildBugReportUrl,
   buildChartCoverUrl,
   buildChartPreviewUrl,
   buildChartPublicUrl,
@@ -1729,6 +1732,23 @@ function App() {
                   <DiagnosticStat label="backups" value={`${diagnostic.backupCount} · ${formatBytes(diagnostic.backupSizeBytes)}`} />
                 </div>
               ) : null}
+              <div className="settings-divider" />
+              <div className="support-row">
+                <div className="setting-copy">
+                  <Bug />
+                  <div>
+                    <h2>report a bug</h2>
+                    <p>Open a GitHub report with the app version and operating system already included.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => void openExternalUrl(buildBugReportUrl(appPackage.version, navigator.userAgent))}
+                  type="button"
+                >
+                  <Bug /> report bug
+                </button>
+              </div>
+              <p className="app-version">UNCHARTABLE v{appPackage.version}</p>
             </section>
           </>
         ) : null}
@@ -1758,7 +1778,7 @@ function DiagnosticStat({ label, value, warning = false }: { label: string; valu
 
 function NavButton({ active, badge, icon, label, onClick }: { active: boolean; badge?: number; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
-    <button aria-current={active ? "page" : undefined} className={active ? "nav-button nav-button-active" : "nav-button"} onClick={onClick} type="button">
+    <button aria-current={active ? "page" : undefined} aria-label={label} className={active ? "nav-button nav-button-active" : "nav-button"} onClick={onClick} title={label} type="button">
       {icon}<span>{label}</span>{badge ? <small>{badge}</small> : null}
     </button>
   );

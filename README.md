@@ -19,8 +19,9 @@ updating, and managing community charts from
 - Lets players restore or permanently remove charts from the app's local trash.
 - Opens UNBEATABLE directly through Steam.
 
-UNCHARTABLE is portable, account-free, and primarily focused on Windows. It does not run a
-background service or require administrator access.
+UNCHARTABLE is portable, account-free, and available natively for Windows and Linux. Linux
+builds detect common Steam, Flatpak Steam, and additional Steam library locations, so Bottles
+is not required. The app does not run a background service or require administrator access.
 
 ## Safety
 
@@ -57,15 +58,10 @@ src-tauri/icons/      application icons
 .github/workflows/    verification and release builds
 ```
 
-## Code signing policy
+## Bug reports
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by
-SignPath Foundation.
-
-Release commits and workflows are maintained by the repository owner. GitHub
-Actions builds release artifacts from tagged source, and SignPath approval is
-restricted to reviewed release builds. UNCHARTABLE does not collect personal
-data; its privacy behavior is documented in the [Privacy](#privacy) section.
+Use **report bug** in the app settings to open a prefilled GitHub issue with the app version
+and operating system. Reports are public, so do not attach private charts or personal paths.
 
 ## License
 

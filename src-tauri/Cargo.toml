@@ -1,6 +1,6 @@
 [package]
 name = "unchartable-app"
-version = "0.1.2"
+version = "0.2.0"
 description = "Install community charts from UNCHARTABLE into UNBEATABLE."
 authors = ["UNCHARTABLE contributors"]
 edition = "2024"

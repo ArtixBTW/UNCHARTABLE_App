@@ -1279,6 +1279,43 @@ h1 {
   width: 15px;
 }
 
+.support-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.support-row > button {
+  display: inline-flex;
+  min-width: 116px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--punch);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--punch);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.support-row > button:hover {
+  background: rgb(255 63 127 / 0.1);
+}
+
+.support-row > button svg {
+  width: 15px;
+}
+
+.app-version {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: right;
+}
+
 .diagnostic-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -2231,9 +2268,14 @@ h1 {
   }
 
   .library-toolbar,
-  .diagnostic-heading {
+  .diagnostic-heading,
+  .support-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .support-row > button {
+    width: 100%;
   }
 
   .batch-actions {

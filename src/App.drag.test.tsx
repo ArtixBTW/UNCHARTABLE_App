@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -160,5 +160,14 @@ describe("chart archive drag and drop", () => {
       });
     });
     expect(await screen.findByText("2 archives checked")).toBeInTheDocument();
+  });
+
+  it("keeps settings navigation labelled and exposes bug reporting", async () => {
+    render(<App />);
+    const settings = await screen.findByRole("button", { name: "settings" });
+    expect(settings).toHaveAttribute("title", "settings");
+    fireEvent.click(settings);
+    expect(screen.getByRole("button", { name: "report bug" })).toBeInTheDocument();
+    expect(screen.getByText("UNCHARTABLE v0.2.0")).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildChartCoverUrl,
+  buildBugReportUrl,
   buildChartPreviewUrl,
   buildChartPublicUrl,
   chartContentVersion,
@@ -62,6 +63,15 @@ describe("chart presentation helpers", () => {
   it("builds the protected preview URL", () => {
     expect(buildChartPreviewUrl({ id: "chart id" }))
       .toBe("https://unchartable.site/api/charts/chart%20id/preview");
+  });
+
+  it("builds a prefilled bug report without local file information", () => {
+    const url = new URL(buildBugReportUrl("0.2.0", "Linux x86_64"));
+    expect(url.origin + url.pathname).toBe("https://github.com/ddecry/UNCHARTABLE_App/issues/new");
+    expect(url.searchParams.get("labels")).toBe("bug");
+    expect(url.searchParams.get("body")).toContain("UNCHARTABLE: v0.2.0");
+    expect(url.searchParams.get("body")).toContain("System: Linux x86_64");
+    expect(url.searchParams.get("body")).not.toContain("CustomSongs");
   });
 
   it("keeps official difficulty classes stable", () => {

@@ -1,4 +1,29 @@
 export const API_ORIGIN = "https://unchartable.site";
+export const BUG_REPORT_ORIGIN = "https://github.com/ddecry/UNCHARTABLE_App/issues/new";
+
+export function buildBugReportUrl(version: string, platform: string) {
+  const params = new URLSearchParams({
+    labels: "bug",
+    title: "bug: ",
+    body: [
+      "## What happened?",
+      "",
+      "Describe the problem and what you expected to happen.",
+      "",
+      "## Steps to reproduce",
+      "",
+      "1. ",
+      "",
+      "## App information",
+      "",
+      `- UNCHARTABLE: v${version}`,
+      `- System: ${platform}`,
+      "",
+      "Please attach a screenshot when the issue is visual. Do not include private folder names or personal files."
+    ].join("\n")
+  });
+  return `${BUG_REPORT_ORIGIN}?${params}`;
+}
 
 export function isArchiveDrop(paths: string[]) {
   return paths.length > 0 && paths.every((path) => /\.(zip|7z|rar)$/i.test(path));

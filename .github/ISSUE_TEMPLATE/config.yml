@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: UNCHARTABLE website feedback
+    url: https://unchartable.site/feedback/
+    about: Use this for issues with the website rather than the desktop app.
