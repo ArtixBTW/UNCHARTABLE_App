@@ -27,6 +27,7 @@ body:
       options:
         - Linux (AppImage)
         - Linux (Debian package)
+        - Linux (Nix package)
         - Windows
         - Other
     validations:
