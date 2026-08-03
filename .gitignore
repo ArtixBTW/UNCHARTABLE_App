@@ -38,3 +38,6 @@ src-tauri/icons/ios/
 *.njsproj
 *.sln
 *.sw?
+
+# Direnv
+/.direnv/
