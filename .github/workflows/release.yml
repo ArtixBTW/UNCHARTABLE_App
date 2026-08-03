@@ -86,6 +86,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           cat > release-notes.md <<'EOF'
