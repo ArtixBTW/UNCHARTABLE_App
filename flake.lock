@@ -17,15 +17,15 @@
     },
     "crane-tauri": {
       "locked": {
-        "lastModified": 1781984549,
-        "narHash": "sha256-iu/qgh21OB3C7MlI8cMPOltegTc0QTRHhbyqKdy21Yo=",
-        "owner": "JPHutchins",
+        "lastModified": 1786420047,
+        "narHash": "sha256-58f5V4Ff/fBi08oFQyTaG09dVDNhN0Es0Sl85mZTViE=",
+        "owner": "ArtixBTW",
         "repo": "crane-tauri",
-        "rev": "072afbfc844bd66f258b8380a5a3161ce9d83b4e",
+        "rev": "e4c46b20f7fdeccb63a7cfa41155bafa6edda267",
         "type": "github"
       },
       "original": {
-        "owner": "JPHutchins",
+        "owner": "ArtixBTW",
         "repo": "crane-tauri",
         "type": "github"
       }
